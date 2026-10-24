@@ -111,6 +111,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
     );
 
     const cookies = this.parseCookies();
+    logger.info(`Injected ${cookies.length} cookies into browser tab (cookieStr len: ${(this.cookieString || '').length}).`);
     if (cookies.length > 0) {
       await page.setCookie(...cookies);
     }
@@ -322,7 +323,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
 
     try {
       await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      await sleep(3000);
+      await sleep(4500);
 
       // Determine numeric shopId from context if not already known
       let targetShopNumericId = /^\d+$/.test(shopId) ? shopId : '';
