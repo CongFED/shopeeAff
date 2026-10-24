@@ -328,18 +328,133 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
 
     try {
       await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      await sleep(2500);
+      await sleep(3000);
 
-      // Click "TẤT CẢ SẢN PHẨM" tab (#product_list) if present on shop front
-      const tabEl = await page.$('a[href*="#product_list"]');
-      if (tabEl) {
-        await tabEl.click();
-        await sleep(2000);
+      // Determine numeric shopId from context if not already known
+      let targetShopNumericId = /^\d+$/.test(shopId) ? shopId : '';
+      if (!targetShopNumericId) {
+        const found = await page.evaluate(() => {
+          const m = document.documentElement.innerHTML.match(/"shopid":\s*(\d+)/i) ||
+                    document.documentElement.innerHTML.match(/"shop_id":\s*(\d+)/i);
+          return m ? m[1] : null;
+        });
+        if (found) {
+          targetShopNumericId = found;
+          this.shopUrlCache.set(found, targetUrl);
+        }
       }
 
-      // Scroll down slightly to trigger lazy-load rendering
-      await page.evaluate(() => window.scrollBy(0, 1000));
-      await sleep(1500);
+      // In-page fast fetch of rcmd_items & get_shop_seo (100% free, runs inside browser origin)
+      if (targetShopNumericId) {
+        const inPageItems: any[] = await page.evaluate(async (sId: string) => {
+          const resItems: any[] = [];
+          const seen = new Set<string>();
+
+          // 1. rcmd_items (Shopee shop category tab main product list)
+          try {
+            const r = await fetch(
+              '/api/v4/shop/rcmd_items?bundle=shop_page_category_tab_main&limit=60&offset=0&shop_id=' + sId,
+              {
+                headers: {
+                  'x-api-source': 'pc',
+                  'x-requested-with': 'XMLHttpRequest',
+                  'x-shopee-language': 'vi',
+                },
+              }
+            );
+            const data = await r.json();
+            const list = data?.data?.items || data?.items || [];
+            for (const it of list) {
+              const item = it.item_basic || it;
+              if (item && item.itemid && !seen.has(String(item.itemid))) {
+                seen.add(String(item.itemid));
+                let priceNum = parseFloat(String(item.price || 0));
+                if (priceNum > 10000000) {
+                  priceNum = priceNum / 100000;
+                }
+                const imageId = item.image || item.images?.[0];
+                const imageUrl = imageId
+                  ? imageId.startsWith('http')
+                    ? imageId
+                    : `https://down-vn.img.susercontent.com/file/${imageId}`
+                  : undefined;
+
+                resItems.push({
+                  itemId: String(item.itemid),
+                  shopId: String(item.shopid || sId),
+                  name: item.name || 'Sản phẩm mới',
+                  url: `https://shopee.vn/product/${item.shopid || sId}/${item.itemid}`,
+                  price: priceNum > 0 ? priceNum : undefined,
+                  imageUrl,
+                  ctime: item.ctime || Math.floor(Date.now() / 1000),
+                });
+              }
+            }
+          } catch (e) {}
+
+          // 2. get_shop_seo fallback
+          try {
+            const r = await fetch('/api/v4/shop/get_shop_seo?shopid=' + sId, {
+              headers: {
+                'x-api-source': 'pc',
+                'x-requested-with': 'XMLHttpRequest',
+                'x-shopee-language': 'vi',
+              },
+            });
+            const data = await r.json();
+            const list = data?.data?.items || [];
+            for (const it of list) {
+              const item = it.item_basic || it;
+              if (item && item.itemid && !seen.has(String(item.itemid))) {
+                seen.add(String(item.itemid));
+                let priceNum = parseFloat(String(item.price || 0));
+                if (priceNum > 10000000) {
+                  priceNum = priceNum / 100000;
+                }
+                const imageId = item.image || item.images?.[0];
+                const imageUrl = imageId
+                  ? imageId.startsWith('http')
+                    ? imageId
+                    : `https://down-vn.img.susercontent.com/file/${imageId}`
+                  : undefined;
+
+                resItems.push({
+                  itemId: String(item.itemid),
+                  shopId: String(item.shopid || sId),
+                  name: item.name || 'Sản phẩm mới',
+                  url: `https://shopee.vn/product/${item.shopid || sId}/${item.itemid}`,
+                  price: priceNum > 0 ? priceNum : undefined,
+                  imageUrl,
+                  ctime: item.ctime || Math.floor(Date.now() / 1000),
+                });
+              }
+            }
+          } catch (e) {}
+
+          return resItems;
+        }, targetShopNumericId);
+
+        for (const it of inPageItems) {
+          if (!seenItemIds.has(it.itemId)) {
+            seenItemIds.add(it.itemId);
+            buyerItems.push(it);
+          }
+        }
+      }
+
+      // If inPageItems found products, we don't even need to wait for DOM clicks
+      if (buyerItems.length === 0) {
+        // Click "TẤT CẢ SẢN PHẨM" tab (#product_list) if present on shop front
+        const tabEl = await page.$('a[href*="#product_list"]');
+        if (tabEl) {
+          await tabEl.click();
+          await sleep(2000);
+        }
+
+        // Scroll down slightly to trigger lazy-load rendering
+        await page.evaluate(() => window.scrollBy(0, 1000));
+        await sleep(1500);
+      }
     } catch (e: any) {
       logger.debug(`Navigation step notice: ${e.message}`);
     } finally {
