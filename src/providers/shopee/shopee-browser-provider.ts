@@ -453,15 +453,33 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       // If inPageItems found products, we don't even need to wait for DOM clicks
       if (buyerItems.length === 0) {
         // Click "TẤT CẢ SẢN PHẨM" tab (#product_list) if present on shop front
-        const tabEl = await page.$('a[href*="#product_list"]');
-        if (tabEl) {
-          await tabEl.click();
-          await sleep(2000);
+        const tabClicked = await this.safeEvaluate(page, () => {
+          const el = document.querySelector('a[href*="#product_list"]');
+          if (el) {
+            (el as HTMLElement).click();
+            return true;
+          }
+          const allLinks = Array.from(document.querySelectorAll('a'));
+          const textLink = allLinks.find(
+            (a) =>
+              (a.innerText || '').toLowerCase().includes('tất cả sản phẩm') ||
+              ((a.innerText || '').toLowerCase().includes('sản phẩm') && !(a.innerText || '').toLowerCase().includes('đánh giá'))
+          );
+          if (textLink) {
+            (textLink as HTMLElement).click();
+            return true;
+          }
+          return false;
+        });
+
+        if (tabClicked) {
+          logger.info('Clicked "Tất cả sản phẩm" tab, waiting for product grid render...');
+          await sleep(3500);
         }
 
         // Scroll down slightly to trigger lazy-load rendering
-        await page.evaluate(() => window.scrollBy(0, 1000));
-        await sleep(1500);
+        await this.safeEvaluate(page, () => window.scrollBy(0, 1000));
+        await sleep(2000);
       }
     } catch (e: any) {
       logger.debug(`Navigation step notice: ${e.message}`);
