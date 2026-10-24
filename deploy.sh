@@ -11,7 +11,7 @@ git fetch origin main
 git reset --hard origin/main
 
 # Install dependencies and build
-pnpm install --config.ignore-scripts=true
+pnpm install --ignore-scripts
 npx tsc
 
 # Ensure schema.sql is copied to dist
