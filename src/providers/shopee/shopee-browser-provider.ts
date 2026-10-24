@@ -340,7 +340,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
           // 1. rcmd_items (Shopee shop category tab main product list)
           try {
             const r = await fetch(
-              '/api/v4/shop/rcmd_items?bundle=shop_page_category_tab_main&limit=60&offset=0&shop_id=' + sId,
+              '/api/v4/shop/rcmd_items?bundle=shop_page_category_tab_main&limit=30&offset=0&shop_id=' + sId,
               {
                 headers: {
                   'x-api-source': 'pc',
