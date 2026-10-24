@@ -31,11 +31,12 @@ export function getProvider(overrideType?: 'mock' | 'shopee-http' | 'browser' | 
 
   if (type === 'mock') {
     defaultProvider = new MockShopeeProvider();
-  } else if (type === 'zenrows' || zenrowsApiKey) {
+  } else if (type === 'zenrows') {
     defaultProvider = new ZenRowsShopeeProvider(zenrowsApiKey);
   } else if (type === 'browser') {
     defaultProvider = new ShopeeBrowserProvider(cookie, ua);
   } else {
+    // Default: Free high-speed Shopee HTTP provider
     defaultProvider = new ShopeeHttpProvider(cookie, afAc, ua);
   }
 
