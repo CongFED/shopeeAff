@@ -1,4 +1,6 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import { getDatabase } from '../database/db.js';
 import { ShopService } from '../modules/shops/shop-service.js';
 import { ProductService } from '../modules/products/product-service.js';
@@ -180,6 +182,32 @@ export function startDashboard(
         } catch (err: any) {
           sendJson(400, { error: err.message });
         }
+      });
+      return;
+    }
+
+    // --- GitHub CI/CD Webhook ---
+    if (pathname === '/api/webhook/github' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        logger.info('GitHub Webhook triggered! Initiating automatic pull & rebuild...');
+        sendJson(200, { success: true, message: 'Build and deploy initiated' });
+
+        const deployScript = path.resolve(process.cwd(), 'deploy.sh');
+        import('node:child_process').then(({ exec }) => {
+          const cmd = fs.existsSync(deployScript)
+            ? `bash "${deployScript}"`
+            : 'git pull origin main && pnpm install && npx tsc && pm2 restart shopee-affiliate';
+
+          exec(cmd, (err, stdout, stderr) => {
+            if (err) {
+              logger.error(`Auto deploy failed: ${err.message}`, { stderr });
+            } else {
+              logger.info('Auto deploy succeeded:\n' + stdout);
+            }
+          });
+        });
       });
       return;
     }

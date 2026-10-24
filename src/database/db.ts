@@ -1,6 +1,7 @@
 import Database, { Database as DatabaseType } from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { logger } from '../utils/logger.js';
 
 let dbInstance: DatabaseType | null = null;
@@ -25,7 +26,8 @@ export function initDatabase(dbPath: string): DatabaseType {
   db.pragma('foreign_keys = ON');
 
   // Load and execute schema
-  const schemaPath = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')), 'schema.sql');
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const schemaPath = path.join(currentDir, 'schema.sql');
   let schemaSql = '';
   if (fs.existsSync(schemaPath)) {
     schemaSql = fs.readFileSync(schemaPath, 'utf8');
