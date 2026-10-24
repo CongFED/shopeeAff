@@ -42,7 +42,7 @@ export function loadConfig(): AppConfig {
   const maxConcurrentRequests = parseInt(process.env.MAX_CONCURRENT_REQUESTS || '3', 10);
   const requestDelayMs = parseInt(process.env.REQUEST_DELAY_MS || '1000', 10);
   const databasePath = process.env.DATABASE_PATH || './data/monitor.db';
-  const dataProvider = ((process.env.DATA_PROVIDER || 'mock').trim().toLowerCase()) as 'mock' | 'shopee-http' | 'browser' | 'zenrows' | 'custom';
+  const dataProvider = ((process.env.DATA_PROVIDER || 'browser').trim().toLowerCase()) as 'mock' | 'shopee-http' | 'browser' | 'zenrows' | 'custom';
   const zenrowsApiKey = process.env.ZENROWS_API_KEY;
   const shopeeCookie = process.env.SHOPEE_COOKIE;
   const shopeeAfAcEncDat = process.env.SHOPEE_AF_AC_ENC_DAT;

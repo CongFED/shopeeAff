@@ -1,9 +1,14 @@
-import puppeteer, { Browser, Page } from 'puppeteer-core';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import type { Browser, Page } from 'puppeteer-core';
 import fs from 'node:fs';
 import { IShopeeProvider, ShopResolveResult, ProductItem, FetchProductsOptions } from '../types.js';
 import { parseShopTarget } from '../../utils/url.js';
 import { logger } from '../../utils/logger.js';
 import { sleep } from '../../utils/time.js';
+
+// Apply Stealth plugin to defeat Shopee Anti-Bot WAF (90309999)
+(puppeteer as any).use(StealthPlugin());
 
 export class ShopeeBrowserProvider implements IShopeeProvider {
   readonly name = 'ShopeeBrowserProvider';
@@ -11,9 +16,10 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
   private cookieString?: string;
   private userAgent?: string;
   private chromePath: string;
-  private browser: Browser | null = null;
-  private activePage: Page | null = null;
+  private browser: any | null = null;
+  private activePage: any | null = null;
   private sellerApiUrl: string | null = null;
+  private shopUrlCache = new Map<string, string>();
 
   private isSellerCentreAvailable: boolean = true;
 
@@ -71,53 +77,28 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       .filter((c) => c.name && c.value);
   }
 
-  private async ensureBrowser(): Promise<{ browser: Browser; page: Page }> {
+  private async ensureBrowser(): Promise<{ browser: any; page: any }> {
     if (this.browser && this.activePage && !this.activePage.isClosed()) {
       return { browser: this.browser, page: this.activePage };
     }
 
-    logger.info(`Starting headless Chrome (${this.chromePath})...`);
-    const browser = await puppeteer.launch({
+    logger.info(`Starting Stealth Chrome (${this.chromePath})...`);
+    const browser = await (puppeteer as any).launch({
       executablePath: this.chromePath,
-      headless: true,
+      headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-gpu',
         '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-        '--window-size=1280,800',
+        '--window-size=1440,900',
+        '--lang=vi-VN,vi',
       ],
       ignoreDefaultArgs: ['--enable-automation'],
     });
 
     const page = await browser.newPage();
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined,
-      });
-    });
-
-    // Blazing-fast performance: Block images, fonts, media, and 3rd party trackers
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const type = req.resourceType();
-      const u = req.url();
-      if (
-        type === 'image' ||
-        type === 'font' ||
-        type === 'media' ||
-        u.includes('google-analytics') ||
-        u.includes('googletagmanager') ||
-        u.includes('facebook.net') ||
-        u.includes('doubleclick')
-      ) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
+    await page.setViewport({ width: 1440, height: 900 });
 
     await page.setUserAgent(
       this.userAgent ||
@@ -129,8 +110,8 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       await page.setCookie(...cookies);
     }
 
-    // Capture seller API URL with SPC_CDS dynamically (avoid education_visible_info matching)
-    page.on('response', (res) => {
+    // Capture seller API URL with SPC_CDS dynamically if present
+    page.on('response', (res: any) => {
       const u = res.url();
       if (/\/get_product_list(\?|$)/.test(u) && u.includes('SPC_CDS=')) {
         this.sellerApiUrl = u;
@@ -161,6 +142,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
     const parsed = parseShopTarget(urlOrIdentifier);
 
     if (parsed.shopId) {
+      this.shopUrlCache.set(parsed.shopId, parsed.normalizedUrl);
       return {
         shopId: parsed.shopId,
         shopName: `Shop ${parsed.shopId}`,
@@ -193,6 +175,8 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       throw new Error(`Could not resolve shopId for URL "${urlOrIdentifier}" via browser`);
     }
 
+    this.shopUrlCache.set(finalShopId, parsed.normalizedUrl);
+
     return {
       shopId: finalShopId,
       shopName: parsed.username || shopInfo.title || `Shop ${finalShopId}`,
@@ -211,7 +195,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
         // Fast path: In-page fetch using existing session & captured SPC_CDS url (<150ms)
         if (this.sellerApiUrl) {
           try {
-            const data: any = await page.evaluate(async (url) => {
+            const data: any = await page.evaluate(async (url: string) => {
               const fetchUrl = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
               const res = await fetch(fetchUrl, { cache: 'no-store' });
               return await res.json();
@@ -285,53 +269,44 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
 
 
     // Strategy 2: Buyer shop page navigation & API / DOM extraction (Works with any normal buyer account)
+    let targetUrl: string;
+    if (shopId.startsWith('http') || shopId.includes('shopee.vn')) {
+      targetUrl = shopId;
+    } else if (this.shopUrlCache.has(shopId)) {
+      targetUrl = this.shopUrlCache.get(shopId)!;
+    } else {
+      targetUrl = `https://shopee.vn/shop/${shopId}`;
+    }
+
+    logger.info(`Browser scraping shop products: ${targetUrl}`);
+
     const buyerItems: ProductItem[] = [];
+    const seenItemIds = new Set<string>();
+
     const onBuyerResponse = async (res: any) => {
       const u = res.url();
       if (
-        (u.includes('get_shop_seo') || u.includes('search_items') || u.includes('rcmd_items')) &&
+        (u.includes('get_shop_seo') || u.includes('search_items') || u.includes('rcmd_items') || u.includes('get_shop_tab')) &&
         res.status() === 200
       ) {
         try {
           const json = await res.json();
-          // Case A: get_shop_seo format
-          if (Array.isArray(json.data?.items)) {
-            for (const item of json.data.items) {
-              const itemId = String(item.itemid || item.item_id);
-              const name = item.name || 'Sản phẩm mới';
-              let priceNum = parseFloat(String(item.price || 0));
-              if (priceNum > 10000000) {
-                priceNum = priceNum / 100000;
-              }
-              const imageId = item.image;
-              const imageUrl = imageId ? `https://down-vn.img.susercontent.com/file/${imageId}` : undefined;
-              const url = `https://shopee.vn/product/${shopId}/${itemId}`;
-
-              buyerItems.push({
-                itemId,
-                shopId,
-                name,
-                url,
-                price: priceNum > 0 ? priceNum : undefined,
-                imageUrl,
-                ctime: Math.floor(Date.now() / 1000),
-              });
-            }
-          }
-          // Case B: search_items or rcmd_items format
-          const rawItems = json.items || json.data?.items || [];
+          const rawItems = json.items || json.data?.items || json.data?.sections?.[0]?.data?.item || [];
           if (Array.isArray(rawItems)) {
             for (const it of rawItems) {
               const basic = it.item_basic || it;
               if (!basic || !basic.itemid) continue;
               const itemId = String(basic.itemid);
+              if (seenItemIds.has(itemId)) continue;
+              seenItemIds.add(itemId);
+
               const name = basic.name || 'Sản phẩm mới';
               let priceNum = parseFloat(String(basic.price || 0));
               if (priceNum > 10000000) {
                 priceNum = priceNum / 100000;
               }
-              const imageId = basic.image;
-              const imageUrl = imageId ? `https://down-vn.img.susercontent.com/file/${imageId}` : undefined;
+              const imageId = basic.image || basic.images?.[0];
+              const imageUrl = imageId ? (imageId.startsWith('http') ? imageId : `https://down-vn.img.susercontent.com/file/${imageId}`) : undefined;
               const url = `https://shopee.vn/product/${shopId}/${itemId}`;
 
               buyerItems.push({
@@ -350,33 +325,83 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
     };
 
     page.on('response', onBuyerResponse);
-    const shopPageUrl = `https://shopee.vn/shop/${shopId}`;
-    await page.goto(shopPageUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
-    await sleep(1000);
-    page.off('response', onBuyerResponse);
 
-    if (buyerItems.length > 0) {
-      return buyerItems;
+    try {
+      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await sleep(2500);
+
+      // Click "TẤT CẢ SẢN PHẨM" tab (#product_list) if present on shop front
+      const tabEl = await page.$('a[href*="#product_list"]');
+      if (tabEl) {
+        await tabEl.click();
+        await sleep(2000);
+      }
+
+      // Scroll down slightly to trigger lazy-load rendering
+      await page.evaluate(() => window.scrollBy(0, 1000));
+      await sleep(1500);
+    } catch (e: any) {
+      logger.debug(`Navigation step notice: ${e.message}`);
+    } finally {
+      page.off('response', onBuyerResponse);
     }
 
-    // DOM fallback if API didn't return
-    const domItems = await page.evaluate((sId: string) => {
-      const anchors = Array.from(document.querySelectorAll('a[href*="-i."]'));
-      return anchors.slice(0, 30).map((a) => {
+    // Extract all product cards from the DOM
+    const domProducts = await page.evaluate((sId: string) => {
+      const anchors = Array.from(document.querySelectorAll('a')).filter((a) =>
+        a.href && (a.href.includes('-i.') || (a.href.includes('/product/') && !a.href.includes('/portal/')))
+      );
+      const items: any[] = [];
+      const seen = new Set<string>();
+
+      for (const a of anchors) {
         const href = (a as HTMLAnchorElement).href;
         const match = href.match(/-i\.(\d+)\.(\d+)/);
-        const nameEl = a.querySelector('div, span, img');
-        const name = (a as HTMLElement).innerText.trim() || nameEl?.getAttribute('alt') || 'Sản phẩm mới';
-        return {
-          itemId: match ? match[2] : Math.random().toString(),
-          shopId: sId,
+        const itId = match ? match[2] : '';
+        if (!itId || seen.has(itId)) continue;
+        seen.add(itId);
+
+        const text = (a as HTMLElement).innerText || '';
+        const img = a.querySelector('img');
+        const imgSrc = img?.getAttribute('src') || '';
+        const altName = img?.getAttribute('alt') || '';
+
+        // Extract title
+        const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+        const name = altName || lines[0] || 'Sản phẩm mới';
+
+        // Extract price (e.g. 130.000 ₫)
+        let price: number | undefined;
+        const priceMatch = text.match(/([\d.]+)\s*₫/);
+        if (priceMatch) {
+          const clean = priceMatch[1].replace(/\./g, '');
+          const pNum = parseInt(clean, 10);
+          if (!isNaN(pNum) && pNum > 0) price = pNum;
+        }
+
+        items.push({
+          itemId: itId,
+          shopId: match ? match[1] : sId,
           name,
-          url: href,
-        };
-      });
+          url: `https://shopee.vn/product/${match ? match[1] : sId}/${itId}`,
+          price,
+          imageUrl: imgSrc || undefined,
+          ctime: Math.floor(Date.now() / 1000),
+        });
+      }
+      return items;
     }, shopId);
 
-    return domItems;
+    // Merge DOM items and intercepted API items
+    for (const item of domProducts) {
+      if (!seenItemIds.has(item.itemId)) {
+        seenItemIds.add(item.itemId);
+        buyerItems.push(item);
+      }
+    }
+
+    logger.info(`Browser provider extracted ${buyerItems.length} products for shop ${shopId}.`);
+    return buyerItems;
   }
 
   async close(): Promise<void> {
