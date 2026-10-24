@@ -1,0 +1,29 @@
+{
+  "name": "shopee-new-product-monitor",
+  "version": "1.0.0",
+  "description": "Shopee VN new product monitor with Telegram notifications and 200 shop capacity",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "tsx src/index.ts",
+    "test": "tsx scripts/run-all-tests.ts",
+    "test:shopee": "tsx scripts/test-shopee-source.ts",
+    "test:telegram": "tsx scripts/test-telegram.ts",
+    "import:shops": "tsx scripts/import-shops.ts",
+    "export:shops": "tsx scripts/export-shops.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^18.0.8",
+    "puppeteer-core": "^25.16.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
