@@ -115,6 +115,13 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       await page.setCookie(...cookies);
     }
 
+    page.on('console', (msg: any) => {
+      const text = msg.text();
+      if (text.includes('[Eval]')) {
+        logger.info(text);
+      }
+    });
+
     return page;
   }
 
@@ -339,6 +346,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
 
           // 1. rcmd_items (Shopee shop category tab main product list)
           try {
+            console.log('[Eval] rcmd_items fetching for shopid: ' + sId);
             const r = await fetch(
               '/api/v4/shop/rcmd_items?bundle=shop_page_category_tab_main&limit=30&offset=0&shop_id=' + sId,
               {
@@ -351,6 +359,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
             );
             const data = await r.json();
             const list = data?.data?.items || data?.items || [];
+            console.log('[Eval] rcmd_items status: ' + r.status + ', error: ' + data?.error + ', items: ' + list.length);
             for (const it of list) {
               const item = it.item_basic || it;
               if (item && item.itemid && !seen.has(String(item.itemid))) {
