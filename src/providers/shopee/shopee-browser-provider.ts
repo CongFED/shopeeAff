@@ -78,7 +78,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
   }
 
   private async ensureBrowser(): Promise<any> {
-    if (this.browser && this.browser.isConnected()) {
+    if (this.browser && this.browser.connected) {
       return this.browser;
     }
 
