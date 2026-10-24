@@ -90,14 +90,30 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled',
-        '--window-size=1440,900',
+        '--disable-gpu',
         '--lang=vi-VN,vi',
       ],
-      ignoreDefaultArgs: ['--enable-automation'],
     });
 
     return this.browser;
+  }
+
+  private async safeEvaluate(page: any, fn: any, ...args: any[]): Promise<any> {
+    let lastErr: any;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await page.evaluate(fn, ...args);
+      } catch (err: any) {
+        lastErr = err;
+        if (err.message && (err.message.includes('destroyed') || err.message.includes('navigating'))) {
+          logger.debug(`safeEvaluate hit navigation/destroyed (attempt ${attempt}), retrying in 1.5s...`);
+          await sleep(1500);
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
   }
 
   private async createPage(): Promise<any> {
@@ -105,14 +121,9 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
     const page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 900 });
 
-    await page.setUserAgent(
-      this.userAgent ||
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    );
-
     const cookies = this.parseCookies();
-    logger.info(`Injected ${cookies.length} cookies into browser tab (cookieStr len: ${(this.cookieString || '').length}).`);
     if (cookies.length > 0) {
+      logger.info(`Injected ${cookies.length} cookies into browser tab (cookieStr len: ${(this.cookieString || '').length}).`);
       await page.setCookie(...cookies);
     }
 
@@ -328,7 +339,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       // Determine numeric shopId from context if not already known
       let targetShopNumericId = /^\d+$/.test(shopId) ? shopId : '';
       if (!targetShopNumericId) {
-        const found = await page.evaluate(() => {
+        const found = await this.safeEvaluate(page, () => {
           const m = document.documentElement.innerHTML.match(/"shopid":\s*(\d+)/i) ||
                     document.documentElement.innerHTML.match(/"shop_id":\s*(\d+)/i);
           return m ? m[1] : null;
@@ -341,7 +352,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
 
       // In-page fast fetch of rcmd_items & get_shop_seo (100% free, runs inside browser origin)
       if (targetShopNumericId) {
-        const inPageItems: any[] = await page.evaluate(async (sId: string) => {
+        const inPageItems: any[] = await this.safeEvaluate(page, async (sId: string) => {
           const resItems: any[] = [];
           const seen = new Set<string>();
 
