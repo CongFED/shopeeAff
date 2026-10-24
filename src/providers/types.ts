@@ -17,6 +17,7 @@ export interface ProductItem {
 export interface FetchProductsOptions {
   limit?: number;
   offset?: number;
+  shopUrl?: string;
 }
 
 export interface IShopeeProvider {

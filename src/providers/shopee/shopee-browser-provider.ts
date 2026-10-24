@@ -255,7 +255,9 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
 
     // Strategy 2: Buyer shop page navigation & API / DOM extraction (Works with any normal buyer account)
     let targetUrl: string;
-    if (shopId.startsWith('http') || shopId.includes('shopee.vn')) {
+    if (options.shopUrl && (options.shopUrl.startsWith('http') || options.shopUrl.includes('shopee.vn'))) {
+      targetUrl = options.shopUrl;
+    } else if (shopId.startsWith('http') || shopId.includes('shopee.vn')) {
       targetUrl = shopId;
     } else if (this.shopUrlCache.has(shopId)) {
       targetUrl = this.shopUrlCache.get(shopId)!;

@@ -164,8 +164,11 @@ export class MonitorEngine {
       throw new Error(`Unable to determine shop_id for shop ${shop.shop_name}`);
     }
 
-    // Fetch latest products from provider (prefer official shop URL if known)
-    const products = await this.provider.getShopProducts(shop.shop_url || targetShopId, { limit: 30 });
+    // Fetch latest products from provider
+    const products = await this.provider.getShopProducts(targetShopId, {
+      limit: 30,
+      shopUrl: shop.shop_url,
+    });
 
     // Process products: first time is baseline, subsequent checks detect new products
     const processResult = this.productService.processShopProducts(targetShopId, products);
