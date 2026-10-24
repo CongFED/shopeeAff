@@ -223,8 +223,8 @@ export function startDashboard(
     res.end('Not Found');
   });
 
-  server.listen(port, () => {
-    logger.info(`Web Dashboard is running at: http://localhost:${port}`);
+  server.listen(port, '0.0.0.0', () => {
+    logger.info(`Web Dashboard is running at: http://0.0.0.0:${port}`);
   });
 
   return server;
