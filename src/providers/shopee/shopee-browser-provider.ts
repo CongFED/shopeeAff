@@ -77,13 +77,13 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       .filter((c) => c.name && c.value);
   }
 
-  private async ensureBrowser(): Promise<{ browser: any; page: any }> {
-    if (this.browser && this.activePage && !this.activePage.isClosed()) {
-      return { browser: this.browser, page: this.activePage };
+  private async ensureBrowser(): Promise<any> {
+    if (this.browser && this.browser.isConnected()) {
+      return this.browser;
     }
 
     logger.info(`Starting Stealth Chrome (${this.chromePath})...`);
-    const browser = await (puppeteer as any).launch({
+    this.browser = await (puppeteer as any).launch({
       executablePath: this.chromePath,
       headless: 'new',
       args: [
@@ -97,6 +97,11 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       ignoreDefaultArgs: ['--enable-automation'],
     });
 
+    return this.browser;
+  }
+
+  private async createPage(): Promise<any> {
+    const browser = await this.ensureBrowser();
     const page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 900 });
 
@@ -110,32 +115,7 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       await page.setCookie(...cookies);
     }
 
-    // Capture seller API URL with SPC_CDS dynamically if present
-    page.on('response', (res: any) => {
-      const u = res.url();
-      if (/\/get_product_list(\?|$)/.test(u) && u.includes('SPC_CDS=')) {
-        this.sellerApiUrl = u;
-      }
-    });
-
-    try {
-      if (this.cookieString && this.cookieString.includes('SPC_SC_SESSION') && this.isSellerCentreAvailable) {
-        await page.goto('https://banhang.shopee.vn/portal/product/list/all', { waitUntil: 'domcontentloaded', timeout: 12000 });
-        if (page.url().includes('vn-onboarding')) {
-          this.isSellerCentreAvailable = false;
-          logger.info('Account is not a registered seller. Directing to buyer strategy.');
-        }
-      } else {
-        await page.goto('https://shopee.vn/', { waitUntil: 'domcontentloaded', timeout: 8000 });
-      }
-    } catch (e: any) {
-      logger.debug(`Initial warm-up completed: ${e.message}`);
-    }
-
-    this.browser = browser;
-    this.activePage = page;
-
-    return { browser, page };
+    return page;
   }
 
   async resolveShop(urlOrIdentifier: string): Promise<ShopResolveResult> {
@@ -150,42 +130,47 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       };
     }
 
-    const { page } = await this.ensureBrowser();
-    logger.info(`Browser resolving shop URL: ${parsed.normalizedUrl}`);
+    const page = await this.createPage();
+    try {
+      logger.info(`Browser resolving shop URL: ${parsed.normalizedUrl}`);
 
-    await page.goto(parsed.normalizedUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: 10000,
-    });
+      await page.goto(parsed.normalizedUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 15000,
+      });
 
-    // Extract shopid and shop name from page context
-    const shopInfo = await page.evaluate(() => {
-      const title = document.title || '';
-      // Look for shopid in window state or scripts
-      const html = document.documentElement.innerHTML;
-      const m = html.match(/"shopid":\s*(\d+)/i) || html.match(/"shop_id":\s*(\d+)/i);
+      // Extract shopid and shop name from page context
+      const shopInfo = await page.evaluate(() => {
+        const title = document.title || '';
+        // Look for shopid in window state or scripts
+        const html = document.documentElement.innerHTML;
+        const m = html.match(/"shopid":\s*(\d+)/i) || html.match(/"shop_id":\s*(\d+)/i);
+        return {
+          title,
+          shopId: m ? m[1] : null,
+        };
+      });
+
+      const finalShopId = shopInfo.shopId || (parsed.shopId as string);
+      if (!finalShopId) {
+        throw new Error(`Could not resolve shopId for URL "${urlOrIdentifier}" via browser`);
+      }
+
+      this.shopUrlCache.set(finalShopId, parsed.normalizedUrl);
+
       return {
-        title,
-        shopId: m ? m[1] : null,
+        shopId: finalShopId,
+        shopName: parsed.username || shopInfo.title || `Shop ${finalShopId}`,
+        shopUrl: parsed.normalizedUrl,
       };
-    });
-
-    const finalShopId = shopInfo.shopId || (parsed.shopId as string);
-    if (!finalShopId) {
-      throw new Error(`Could not resolve shopId for URL "${urlOrIdentifier}" via browser`);
+    } finally {
+      await page.close().catch(() => {});
     }
-
-    this.shopUrlCache.set(finalShopId, parsed.normalizedUrl);
-
-    return {
-      shopId: finalShopId,
-      shopName: parsed.username || shopInfo.title || `Shop ${finalShopId}`,
-      shopUrl: parsed.normalizedUrl,
-    };
   }
 
   async getShopProducts(shopId: string, options: FetchProductsOptions = {}): Promise<ProductItem[]> {
-    const { page } = await this.ensureBrowser();
+    const page = await this.createPage();
+    try {
 
     // Strategy 1: Seller Centre API query (Only for shop owner accounts with SPC_SC_SESSION)
     if (this.isSellerCentreAvailable && this.cookieString && this.cookieString.includes('SPC_SC_SESSION')) {
@@ -517,6 +502,9 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
 
     logger.info(`Browser provider extracted ${buyerItems.length} products for shop ${shopId}.`);
     return buyerItems;
+    } finally {
+      await page.close().catch(() => {});
+    }
   }
 
   async close(): Promise<void> {
