@@ -1,15 +1,61 @@
 /**
- * Shopee Realtime Monitor - Content Script
- * 100% CSP Compliant (No inline scripts injected into web page)
- * Safely extracts products from both Seller Centre and Buyer Portal DOM.
+ * Shopee Realtime Monitor - Content Script (Production Grade)
+ * 100% CSP Compliant & Safe Lifecycle (No "Extension context invalidated" errors)
  */
 
-console.log('[Shopee Monitor] Content script loaded on:', window.location.href);
+// Suppress unhandled stale context promise rejections
+window.addEventListener('unhandledrejection', (event) => {
+  if (event.reason?.message?.includes('Extension context invalidated')) {
+    event.preventDefault();
+  }
+});
 
+let scanTimer = null;
+let bodyObserver = null;
 let lastReportedCount = null;
 let lastProductsHash = '';
 
+function isContextValid() {
+  return typeof chrome !== 'undefined' && !!chrome.runtime && !!chrome.runtime.id;
+}
+
+function cleanupStaleContext() {
+  if (scanTimer) {
+    clearInterval(scanTimer);
+    scanTimer = null;
+  }
+  if (bodyObserver) {
+    bodyObserver.disconnect();
+    bodyObserver = null;
+  }
+}
+
+function safeSendMessage(msg, callback) {
+  if (!isContextValid()) {
+    cleanupStaleContext();
+    return;
+  }
+  try {
+    chrome.runtime.sendMessage(msg, (response) => {
+      if (chrome.runtime.lastError) {
+        // Handled silently
+        return;
+      }
+      if (callback) callback(response);
+    });
+  } catch (err) {
+    if (err.message && err.message.includes('Extension context invalidated')) {
+      cleanupStaleContext();
+    }
+  }
+}
+
 function scanCurrentPage() {
+  if (!isContextValid()) {
+    cleanupStaleContext();
+    return;
+  }
+
   try {
     let activeCount = null;
     const tabElements = document.querySelectorAll('div, span, a, button, p, h1, h2, h3');
@@ -17,7 +63,6 @@ function scanCurrentPage() {
     // 1. Detect total product count from tabs or badges
     for (const el of tabElements) {
       const text = (el.textContent || '').trim();
-      // Matches: "Đang hoạt động (17)", "Đang hoạt động 17", "Tất cả (17)", "TẤT CẢ SẢN PHẨM (17)"
       const m = text.match(/(?:Đang\s*hoạt\s*động|Còn\s*hàng|Tất\s*cả|TẤT\s*CẢ\s*SẢN\s*PHẨM)[^\d]*(\d+)/i);
       if (m) {
         activeCount = parseInt(m[1], 10);
@@ -38,9 +83,8 @@ function scanCurrentPage() {
 
     // 2. Extract DOM Product Cards (Both Seller Centre and Buyer Shop Page)
     const collectedProducts = new Map();
-
-    // 2.1. Seller Centre Table Row Extractor (banhang.shopee.vn)
     const isSellerCenter = window.location.hostname.includes('banhang.shopee.vn') || window.location.hostname.includes('seller.shopee.vn');
+
     if (isSellerCenter) {
       const rowElements = document.querySelectorAll('tr, [role="row"], .shopee-table__row, [class*="product-row"], [class*="item-row"]');
       for (const row of rowElements) {
@@ -49,11 +93,9 @@ function scanCurrentPage() {
         if (idMatch) {
           const itemId = idMatch[1];
           if (!collectedProducts.has(itemId)) {
-            // Price: match ₫... or ...₫
             const priceMatch = rowText.match(/₫\s*([\d.,]+)|([\d.,]+)\s*₫/);
             const price = priceMatch ? parseInt((priceMatch[1] || priceMatch[2]).replace(/[.,]/g, ''), 10) : 0;
 
-            // Product Name: extract lines from rowText before "SKU" or "ID"
             const lines = rowText.split('\n').map(l => l.trim()).filter(Boolean);
             let name = '';
             for (const line of lines) {
@@ -94,7 +136,7 @@ function scanCurrentPage() {
       }
     }
 
-    // 2.2. Buyer Portal Links Extractor (shopee.vn/shop/...)
+    // Buyer Portal Links Extractor (shopee.vn/shop/...)
     const links = document.querySelectorAll('a[href*="/product/"]');
     for (const a of links) {
       const href = a.getAttribute('href') || '';
@@ -140,70 +182,76 @@ function scanCurrentPage() {
       lastReportedCount = total;
       lastProductsHash = currentHash;
 
-      console.log('[Shopee Monitor] DOM update detected:', { total, productsCount: products.length });
-
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         action: 'seller_centre_detected',
         totalCount: total,
         products: products
-      }).catch(() => {});
+      });
     }
   } catch (err) {
-    console.warn('[Shopee Monitor] Scan error:', err);
+    if (err.message && err.message.includes('Extension context invalidated')) {
+      cleanupStaleContext();
+      return;
+    }
+    // Ignore minor DOM parsing warnings
   }
-}
-
-// Run scanner safely on page load and every 2.5 seconds
-scanCurrentPage();
-setInterval(scanCurrentPage, 2500);
-
-if (document.body) {
-  const observer = new MutationObserver(() => scanCurrentPage());
-  observer.observe(document.body, { childList: true, subtree: true });
 }
 
 // 3. Same-Origin API Proxy for Background Scanner
 // Executes requests directly inside the buyer tab to bypass anti-bot WAF (90309999)
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.action === 'fetch_shopee_api') {
-    fetch(msg.url, {
-      method: msg.method || 'GET',
-      credentials: 'include',
-      headers: {
-        'x-api-source': 'pc',
-        'x-requested-with': 'XMLHttpRequest',
-        'x-shopee-language': 'vi',
-        'referer': msg.referer || window.location.href,
-        ...(msg.headers || {})
-      },
-      body: msg.body ? JSON.stringify(msg.body) : undefined
-    })
-      .then(async (r) => {
-        try {
-          const data = await r.json();
-          sendResponse({ success: true, status: r.status, data });
-        } catch (e) {
-          sendResponse({ success: false, status: r.status, error: 'JSON parse error' });
-        }
+if (isContextValid()) {
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!isContextValid()) {
+      cleanupStaleContext();
+      return false;
+    }
+
+    if (msg.action === 'fetch_shopee_api') {
+      fetch(msg.url, {
+        method: msg.method || 'GET',
+        credentials: 'include',
+        headers: {
+          'x-api-source': 'pc',
+          'x-requested-with': 'XMLHttpRequest',
+          'x-shopee-language': 'vi',
+          'referer': msg.referer || window.location.href,
+          ...(msg.headers || {})
+        },
+        body: msg.body ? JSON.stringify(msg.body) : undefined
       })
-      .catch((err) => {
-        sendResponse({ success: false, error: err.message });
-      });
-    return true; // Keep message channel open for async response
-  }
+        .then(async (r) => {
+          try {
+            const data = await r.json();
+            sendResponse({ success: true, status: r.status, data });
+          } catch (e) {
+            sendResponse({ success: false, status: r.status, error: 'JSON parse error' });
+          }
+        })
+        .catch((err) => {
+          sendResponse({ success: false, error: err.message });
+        });
+      return true; // Keep message channel open for async response
+    }
 
-  if (msg.action === 'ping_buyer_tab') {
-    sendResponse({ success: true, url: window.location.href, isBuyerTab: !window.location.hostname.includes('banhang.') });
-    return true;
-  }
-});
+    if (msg.action === 'ping_buyer_tab') {
+      sendResponse({ success: true, url: window.location.href, isBuyerTab: !window.location.hostname.includes('banhang.') });
+      return true;
+    }
+  });
 
-// Announce tab readiness to background service worker
-try {
-  chrome.runtime.sendMessage({
+  // Announce tab readiness to background service worker
+  safeSendMessage({
     action: 'shopee_buyer_tab_ready',
     url: window.location.href,
     isBuyerTab: !window.location.hostname.includes('banhang.')
-  }).catch(() => {});
-} catch (e) {}
+  });
 
+  // Run scanner on page load and every 2.5 seconds
+  scanCurrentPage();
+  scanTimer = setInterval(scanCurrentPage, 2500);
+
+  if (document.body) {
+    bodyObserver = new MutationObserver(() => scanCurrentPage());
+    bodyObserver.observe(document.body, { childList: true, subtree: true });
+  }
+}
