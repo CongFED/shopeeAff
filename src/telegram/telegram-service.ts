@@ -151,8 +151,23 @@ export class TelegramService {
 
     await this.rateLimitThrottle();
 
-    // Send formatted text message with rich link preview enabled
+    // Send photo or formatted text message
     try {
+      if (payload.imageUrl) {
+        try {
+          await this.postTelegramApi('sendPhoto', {
+            chat_id: this.chatId,
+            photo: payload.imageUrl,
+            caption: messageHtml,
+            parse_mode: 'HTML',
+          });
+          logger.info(`Telegram photo notification sent for: ${payload.itemName}`);
+          return { success: true };
+        } catch (photoErr: any) {
+          logger.warn(`Telegram sendPhoto failed (${photoErr.message}), falling back to sendMessage`);
+        }
+      }
+
       await this.postTelegramApi('sendMessage', {
         chat_id: this.chatId,
         text: messageHtml,

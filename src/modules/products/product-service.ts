@@ -67,7 +67,7 @@ export class ProductService {
     `);
     const updateStmt = db.prepare(`
       UPDATE products 
-      SET last_seen_at = ?, price = coalesce(?, price), item_name = coalesce(?, item_name)
+      SET last_seen_at = ?, price = coalesce(?, price), item_name = coalesce(?, item_name), image_url = coalesce(?, image_url)
       WHERE id = ?
     `);
 
@@ -114,7 +114,7 @@ export class ProductService {
             });
           }
 
-          updateStmt.run(now, item.price ?? null, item.name, existing.id);
+          updateStmt.run(now, item.price ?? null, item.name, item.imageUrl ?? null, existing.id);
         } else {
           // New product!
           if (isBaseline) {
