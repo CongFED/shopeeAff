@@ -38,11 +38,66 @@ function scanCurrentPage() {
 
     // 2. Extract DOM Product Cards (Both Seller Centre and Buyer Shop Page)
     const collectedProducts = new Map();
-    const links = document.querySelectorAll('a[href*="/product/"]');
 
+    // 2.1. Seller Centre Table Row Extractor (banhang.shopee.vn)
+    const isSellerCenter = window.location.hostname.includes('banhang.shopee.vn') || window.location.hostname.includes('seller.shopee.vn');
+    if (isSellerCenter) {
+      const rowElements = document.querySelectorAll('tr, [role="row"], .shopee-table__row, [class*="product-row"], [class*="item-row"]');
+      for (const row of rowElements) {
+        const rowText = row.innerText || '';
+        const idMatch = rowText.match(/(?:ID\s*Sản\s*phẩm|Mã\s*SP|ID):\s*(\d+)/i);
+        if (idMatch) {
+          const itemId = idMatch[1];
+          if (!collectedProducts.has(itemId)) {
+            // Price: match ₫... or ...₫
+            const priceMatch = rowText.match(/₫\s*([\d.,]+)|([\d.,]+)\s*₫/);
+            const price = priceMatch ? parseInt((priceMatch[1] || priceMatch[2]).replace(/[.,]/g, ''), 10) : 0;
+
+            // Product Name: extract lines from rowText before "SKU" or "ID"
+            const lines = rowText.split('\n').map(l => l.trim()).filter(Boolean);
+            let name = '';
+            for (const line of lines) {
+              if (
+                line.length > 3 &&
+                !line.includes('ID Sản phẩm') &&
+                !line.includes('SKU') &&
+                !line.includes('Model ID') &&
+                !line.includes('₫') &&
+                !line.includes('Doanh số') &&
+                !line.includes('Kho hàng') &&
+                !line.includes('Cập nhật') &&
+                !line.includes('Thao tác') &&
+                !line.includes('Lưu Lượng') &&
+                !line.includes('Xem thêm') &&
+                !line.includes('Đẩy') &&
+                !line.includes('Hết hàng')
+              ) {
+                name = line;
+                break;
+              }
+            }
+
+            const imgEl = row.querySelector('img');
+            const imageUrl = imgEl ? imgEl.src : undefined;
+
+            if (name && itemId) {
+              collectedProducts.set(itemId, {
+                itemId,
+                name,
+                price,
+                imageUrl,
+                url: `https://shopee.vn/product/1368956675/${itemId}`
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // 2.2. Buyer Portal Links Extractor (shopee.vn/shop/...)
+    const links = document.querySelectorAll('a[href*="/product/"]');
     for (const a of links) {
       const href = a.getAttribute('href') || '';
-      // Matches /product/1368956675/56418741612 or /product/edit/56418741612 or /product/56418741612
       const m = href.match(/\/product\/(?:edit\/)?(?:\d+\/)?(\d+)/);
       if (m) {
         const itemId = m[1];
@@ -64,7 +119,7 @@ function scanCurrentPage() {
             name = a.textContent.trim();
           }
 
-          if (name.length > 3 && !name.includes('ID') && !name.includes('₫')) {
+          if (name.length > 3 && !name.includes('ID') && !name.includes('₫') && !name.includes('Cập nhật')) {
             collectedProducts.set(itemId, {
               itemId,
               name,
@@ -74,20 +129,6 @@ function scanCurrentPage() {
             });
           }
         }
-      }
-    }
-
-    // 3. Fallback: check text patterns like "ID: 123456" or "Mã sản phẩm: 123456" in table rows
-    const idMatches = document.body.innerText.matchAll(/(?:ID\s*Sản\s*phẩm|Mã\s*sản\s*phẩm|Mã\s*SP|ID):\s*(\d+)/gi);
-    for (const match of idMatches) {
-      const itemId = match[1];
-      if (!collectedProducts.has(itemId)) {
-        collectedProducts.set(itemId, {
-          itemId,
-          name: 'Sản phẩm mới (Shop)',
-          price: 0,
-          url: `https://shopee.vn/product/1368956675/${itemId}`
-        });
       }
     }
 

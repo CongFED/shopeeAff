@@ -97,7 +97,88 @@ chrome.runtime.onConnect.addListener((port) => {
       }
     });
   }
+// Listen to messages from content scripts
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === 'seller_centre_detected') {
+    handleSellerCentreUpdate(msg.products, msg.totalCount).catch(console.error);
+  }
 });
+
+async function handleSellerCentreUpdate(products, totalCount) {
+  if (!Array.isArray(products) || products.length === 0) return;
+  const state = await chrome.storage.local.get(null);
+  const seenSet = new Set(state.seenItems || []);
+  const knownProducts = state.knownProducts || {};
+  const isFirstRun = !state.hasEstablishedSellerBaseline;
+
+  const newProductsFound = [];
+  for (const p of products) {
+    if (!p.itemId) continue;
+    // Check price changes
+    const old = knownProducts[p.itemId];
+    if (old && !isFirstRun) {
+      if (p.price && old.price && p.price !== old.price) {
+        addLog('alert', `🚨 [Kênh Người Bán] SẢN PHẨM ĐỔI GIÁ: ${p.name} (${old.price.toLocaleString('vi-VN')}₫ ➔ ${p.price.toLocaleString('vi-VN')}₫)`);
+        await sendProductUpdateAlert(
+          state.teleToken,
+          state.teleChatId,
+          "The Girl's Room",
+          p,
+          `Đổi giá: ${old.price.toLocaleString('vi-VN')} ₫ ➔ ${p.price.toLocaleString('vi-VN')} ₫`
+        );
+        showDesktopNotification("The Girl's Room", {
+          name: `Đổi giá: ${p.name}`,
+          price: p.price
+        });
+      }
+    }
+    knownProducts[p.itemId] = { name: p.name, price: p.price, imageUrl: p.imageUrl, url: p.url };
+
+    if (!seenSet.has(p.itemId)) {
+      seenSet.add(p.itemId);
+      if (!isFirstRun) {
+        newProductsFound.push(p);
+      }
+    }
+  }
+
+  await chrome.storage.local.set({
+    seenItems: Array.from(seenSet),
+    knownProducts,
+    hasEstablishedSellerBaseline: true,
+    lastSellerCount: totalCount
+  });
+
+  if (isFirstRun) {
+    addLog('info', `[Kênh Người Bán] Đã thiết lập mốc ban đầu: ${products.length} sản phẩm. Sẵn sàng bắt sản phẩm mới!`);
+  } else if (newProductsFound.length > 0) {
+    addLog('alert', `🚨 [Kênh Người Bán] PHÁT HIỆN ${newProductsFound.length} SẢN PHẨM MỚI!`);
+    for (const np of newProductsFound) {
+      await sendTelegramAlert(state.teleToken, state.teleChatId, "The Girl's Room", np);
+      showDesktopNotification("The Girl's Room", np);
+    }
+  }
+
+  // Also auto-sync Shopee cookies to VPS
+  syncShopeeCookiesToVps(state.vpsUrl || 'http://36.50.26.72:3002').catch(() => {});
+  // Also auto-sync real products to VPS
+  syncProductsToVps(state.vpsUrl || 'http://36.50.26.72:3002', '1368956675', products).catch(() => {});
+}
+
+async function syncShopeeCookiesToVps(vpsUrl) {
+  if (!chrome.cookies || !vpsUrl) return;
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: 'shopee.vn' });
+    if (cookies && cookies.length > 0) {
+      const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+      await fetch(`${vpsUrl}/api/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shopeeCookie: cookieStr })
+      });
+    }
+  } catch (e) {}
+}
 
 // Initialize Storage on install
 chrome.runtime.onInstalled.addListener(async () => {

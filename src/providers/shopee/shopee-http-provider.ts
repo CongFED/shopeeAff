@@ -167,56 +167,7 @@ export class ShopeeHttpProvider implements IShopeeProvider {
     const limit = options.limit || 30;
     const offset = options.offset || 0;
 
-    // Strategy 1: Zero-block get_categories (Works 100% reliably 24/7 on VPS datacenter IPs without WAF 90309999)
-    try {
-      const catUrl = `https://shopee.vn/api/v4/shop/get_categories?shopid=${encodeURIComponent(shopId)}`;
-      const catRes = await this.httpRequest(catUrl, {
-        Referer: `https://shopee.vn/shop/${shopId}`,
-      });
-      if (catRes.statusCode === 200) {
-        const catJson = JSON.parse(catRes.body);
-        if (catJson.error === 0 && Array.isArray(catJson.data?.shop_categories) && catJson.data.shop_categories.length > 0) {
-          const catItems: ProductItem[] = [];
-          for (const c of catJson.data.shop_categories) {
-            const catId = c.shop_category_id;
-            const total = c.total || 0;
-            const displayName = c.display_name || 'Danh mục';
-            const catImage = c.image;
-            if (total <= 0) continue;
-
-            for (let i = 1; i <= total; i++) {
-              const itemId = `${shopId}_cat_${catId}_${i}`;
-              const isLatest = i === total;
-              const imageUrl = (isLatest && catImage)
-                ? `https://down-vn.img.susercontent.com/file/${catImage}`
-                : undefined;
-              const url = `https://shopee.vn/shop/${shopId}/search?shopCollection=${catId}`;
-
-              catItems.push({
-                itemId,
-                shopId: String(shopId),
-                name: `[${displayName}] Sản phẩm mới #${i}`,
-                url,
-                price: undefined,
-                imageUrl,
-                ctime: Math.floor(Date.now() / 1000),
-              });
-            }
-          }
-
-          if (catItems.length > 0) {
-            logger.info(
-              `[get_categories] Loaded ${catItems.length} products across ${catJson.data.shop_categories.length} categories for shop ${shopId}`
-            );
-            return catItems;
-          }
-        }
-      }
-    } catch (catErr: any) {
-      logger.warn(`get_categories check failed for shop ${shopId}: ${catErr.message}`);
-    }
-
-    // Strategy 2: Try get_shop_seo (bypasses WAF 90309999 when available)
+    // Strategy 1: Try get_shop_seo (returns real item details with name, price, url without WAF block)
     try {
       const seoUrl = `https://shopee.vn/api/v4/shop/get_shop_seo?shopid=${encodeURIComponent(shopId)}`;
       const seoRes = await this.httpRequest(seoUrl);
@@ -229,7 +180,8 @@ export class ShopeeHttpProvider implements IShopeeProvider {
             if (!item || !item.itemid) continue;
             const itemId = String(item.itemid);
             const name = item.name || 'Sản phẩm mới';
-            const price = typeof item.price === 'number' ? item.price : undefined;
+            let price = typeof item.price === 'number' ? item.price : undefined;
+            if (price && price > 10000000) price = Math.round(price / 100000);
             const imageId = item.image || item.images?.[0];
             const imageUrl = imageId ? `https://down-vn.img.susercontent.com/file/${imageId}` : undefined;
             const itemShopId = String(item.shopid || shopId);
@@ -254,7 +206,7 @@ export class ShopeeHttpProvider implements IShopeeProvider {
       logger.debug(`get_shop_seo failed for shop ${shopId}: ${err.message}`);
     }
 
-    // Fallback: search_items
+    // Strategy 2: search_items
     const searchUrl = `https://shopee.vn/api/v4/shop/search_items?shop_id=${encodeURIComponent(
       shopId
     )}&limit=${limit}&offset=${offset}&order=desc&by=ctime`;
@@ -298,7 +250,8 @@ export class ShopeeHttpProvider implements IShopeeProvider {
 
         const itemId = String(item.itemid);
         const name = item.name || 'Sản phẩm mới';
-        const price = typeof item.price === 'number' ? item.price : undefined;
+        let price = typeof item.price === 'number' ? item.price : undefined;
+        if (price && price > 10000000) price = Math.round(price / 100000);
         const imageId = item.image || item.images?.[0];
         const imageUrl = imageId ? `https://down-vn.img.susercontent.com/file/${imageId}` : undefined;
         const itemShopId = String(item.shopid || shopId);
