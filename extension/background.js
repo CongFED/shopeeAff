@@ -224,9 +224,11 @@ async function scanSingleShop(shop, state) {
       return;
     }
 
-    // Step 1: Ultra-fast check via get_categories (100% Free, NO 404, No Anti-bot block)
-    let liveItemCount = null;
+    // Step 1: Query both get_categories and get_shop_base_v2
+    let categoryTotal = 0;
+    let baseTotal = 0;
     let categorySignature = '';
+    let categoriesList = [];
 
     try {
       const catRes = await fetch(`https://shopee.vn/api/v4/shop/get_categories?shopid=${numericShopId}`, {
@@ -241,14 +243,14 @@ async function scanSingleShop(shop, state) {
 
       if (catRes.ok) {
         const catData = await catRes.json();
-        const cats = catData.data?.shop_categories || [];
-        liveItemCount = cats.reduce((sum, c) => sum + (c.total || 0), 0);
-        categorySignature = cats.map((c) => `${c.shop_category_id}:${c.total}`).join(',');
+        categoriesList = catData.data?.shop_categories || [];
+        categoryTotal = categoriesList.reduce((sum, c) => sum + (c.total || 0), 0);
+        categorySignature = categoriesList.map((c) => `${c.shop_category_id}:${c.total}`).join(',');
       }
     } catch (e) {}
 
-    // Fallback if get_categories failed: POST get_shop_base_v2
-    if (liveItemCount === null) {
+    // Also query get_shop_base_v2 (Returns TRUE item_count of entire shop)
+    try {
       const usernameMatch = shop.shop_url ? shop.shop_url.match(/shopee\.vn\/([^/?#]+)/) : null;
       const username = usernameMatch ? usernameMatch[1] : '';
       const baseRes = await fetch('https://shopee.vn/api/v4/shop/get_shop_base_v2', {
@@ -271,12 +273,11 @@ async function scanSingleShop(shop, state) {
 
       if (baseRes.ok) {
         const baseData = await baseRes.json();
-        liveItemCount = baseData.data?.item_count || 0;
-      } else {
-        addLog('warn', `Shop ${shop.shop_name} phản hồi HTTP ${baseRes.status}`);
-        return;
+        baseTotal = baseData.data?.item_count || 0;
       }
-    }
+    } catch (e) {}
+
+    const liveItemCount = Math.max(categoryTotal, baseTotal);
 
     const lastItemCount = shop.last_item_count;
     const lastSig = shop.last_category_sig;
@@ -379,7 +380,7 @@ async function scanSingleShop(shop, state) {
       syncProductsToVps(state.vpsUrl, numericShopId, products).catch(() => {});
     } else if (hasNewItems) {
       // Find category that has images or newest count
-      const targetCat = categories.find((c) => c.image && c.total > 0) || categories[0];
+      const targetCat = categoriesList.find((c) => c.image && c.total > 0) || categoriesList[0];
       const newCard = {
         itemId: 'cat_' + (targetCat?.shop_category_id || Date.now()),
         name: targetCat ? `[Sản phẩm mới] Nhóm: "${targetCat.display_name}" (+${liveItemCount - (lastItemCount || 0)} SP)` : `Sản phẩm mới từ ${shop.shop_name}`,

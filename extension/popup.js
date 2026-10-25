@@ -102,60 +102,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderShops(updated);
   });
 
-  // Sync & Refresh Button
+  // Refresh Data Button
   btnSyncVps.addEventListener('click', async () => {
     btnSyncVps.disabled = true;
     btnSyncVps.innerHTML = '<span class="icon">⏳</span> Đang làm mới...';
-    try {
-      const { vpsUrl } = await chrome.storage.local.get('vpsUrl');
-      if (vpsUrl && vpsUrl.includes(':3000')) {
-        // Try VPS with 1.5s timeout
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 1500);
-        try {
-          const res = await fetch(`${vpsUrl}/api/shops`, { signal: controller.signal });
-          clearTimeout(timeout);
-          if (res.ok) {
-            const vpsShops = await res.json();
-            if (Array.isArray(vpsShops) && vpsShops.length > 0) {
-              const { shops = [] } = await chrome.storage.local.get('shops');
-              const existingUrls = new Set(shops.map((s) => s.shop_url));
-              const merged = [...shops];
-              for (const vs of vpsShops) {
-                if (!existingUrls.has(vs.shop_url)) {
-                  merged.push({
-                    id: vs.id,
-                    shop_id: vs.shop_id || '',
-                    shop_name: vs.shop_name,
-                    shop_url: vs.shop_url,
-                    is_active: Boolean(vs.is_active),
-                    last_item_count: null
-                  });
-                  existingUrls.add(vs.shop_url);
-                }
-              }
-              await chrome.storage.local.set({ shops: merged });
-              renderShops(merged);
-              alert(`Đã đồng bộ thành công ${merged.length} shop!`);
-              return;
-            }
-          }
-        } catch (vpsErr) {
-          clearTimeout(timeout);
-        }
-      }
-
-      // Standalone refresh: Trigger active scan
-      chrome.runtime.sendMessage({ action: 'trigger_scan_now' }, () => {
+    chrome.runtime.sendMessage({ action: 'trigger_scan_now' }, () => {
+      setTimeout(() => {
+        btnSyncVps.disabled = false;
+        btnSyncVps.innerHTML = '<span class="icon">🔄</span> Làm mới dữ liệu';
         refreshDisplay();
-      });
-      alert('Đã kích hoạt quét làm mới dữ liệu realtime thành công!\n(Extension đang hoạt động trực tiếp 100% độc lập với Shopee & Telegram không cần VPS).');
-    } catch (e) {
-      alert(`Đã làm mới dữ liệu.`);
-    } finally {
-      btnSyncVps.disabled = false;
-      btnSyncVps.innerHTML = '<span class="icon">🔄</span> Làm mới dữ liệu';
-    }
+      }, 1000);
+    });
   });
 
   // Save Settings
