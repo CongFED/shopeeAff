@@ -20,7 +20,8 @@
     "storage",
     "alarms",
     "notifications",
-    "cookies"
+    "cookies",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "https://*.shopee.vn/*",

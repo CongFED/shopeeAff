@@ -29,8 +29,39 @@ const DEFAULT_SETTINGS = {
   logs: []
 };
 
+// Setup declarativeNetRequest to bypass Shopee cross-origin WAF
+async function setupNetRules() {
+  if (!chrome.declarativeNetRequest) return;
+  try {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [1],
+      addRules: [
+        {
+          id: 1,
+          priority: 1,
+          action: {
+            type: 'modifyHeaders',
+            requestHeaders: [
+              { header: 'Origin', operation: 'set', value: 'https://shopee.vn' },
+              { header: 'Referer', operation: 'set', value: 'https://shopee.vn/' }
+            ]
+          },
+          condition: {
+            urlFilter: '||shopee.vn/*',
+            resourceTypes: ['xmlhttprequest']
+          }
+        }
+      ]
+    });
+  } catch (e) {
+    console.warn('DeclarativeNetRequest rule error:', e);
+  }
+}
+setupNetRules();
+
 // Initialize Storage on install
 chrome.runtime.onInstalled.addListener(async () => {
+  setupNetRules();
   const data = await chrome.storage.local.get(null);
   const initial = { ...DEFAULT_SETTINGS, ...data };
   await chrome.storage.local.set(initial);
@@ -244,6 +275,26 @@ async function scanSingleShop(shop, state) {
 
         // Sync to VPS Server
         syncProductsToVps(state.vpsUrl, numericShopId, products).catch(() => {});
+      } else {
+        // hasNewItems is true (e.g. 14 -> 15 SP), but search index didn't list specific item details yet
+        // GUARANTEED INSTANT ALERT TO TELEGRAM!
+        addLog('alert', `🚨 [${shop.shop_name}] PHÁT HIỆN SẢN PHẨM MỚI (${lastItemCount || 0} ➔ ${liveItemCount} SP)!`);
+        await sendShopCountAlert(
+          state.teleToken,
+          state.teleChatId,
+          shop.shop_name,
+          shop.shop_url,
+          lastItemCount || 0,
+          liveItemCount
+        );
+        showDesktopNotification(shop.shop_name, {
+          name: `Shop vừa đăng sản phẩm mới! (${lastItemCount || 0} ➔ ${liveItemCount} SP)`,
+          price: 0
+        });
+
+        const addedCount = Math.max(1, liveItemCount - (lastItemCount || 0));
+        const todayCount = (state.newProductsToday || 0) + addedCount;
+        await chrome.storage.local.set({ newProductsToday: todayCount });
       }
     }
   } catch (err) {
@@ -422,6 +473,47 @@ async function sendTelegramAlert(botToken, chatId, shopName, item) {
     });
     if (res.ok) {
       addLog('success', `Đã bắn thông báo Telegram: ${item.name}`);
+    } else {
+      const errJson = await res.json().catch(() => ({}));
+      addLog('alert', `Lỗi gửi Telegram: ${errJson.description || res.status}`);
+    }
+  } catch (err) {
+    addLog('alert', `Lỗi mạng khi gửi Telegram: ${err.message}`);
+  }
+}
+
+// Instant Shop Count Telegram Alert (Fires when quantity changes)
+async function sendShopCountAlert(botToken, chatId, shopName, shopUrl, oldCount, newCount) {
+  if (!botToken || !chatId) {
+    addLog('warn', 'Thiếu Telegram Bot Token hoặc Chat ID.');
+    return;
+  }
+
+  const timeStr = new Date().toLocaleString('vi-VN');
+  const added = newCount - (oldCount || 0);
+  const targetUrl = shopUrl || 'https://shopee.vn';
+
+  const text =
+    `🚨 <b>PHÁT HIỆN SHOP VỪA ĐĂNG SẢN PHẨM MỚI!</b>\n\n` +
+    `🏪 <b>Shop:</b> ${escapeHtml(shopName)}\n` +
+    `📦 <b>Biến động:</b> <code>${oldCount || 0}</code> ➔ <code>${newCount}</code> SP (<b>+${added > 0 ? added : 1} sản phẩm mới</b>)\n` +
+    `⏰ <b>Thời gian:</b> ${timeStr}\n\n` +
+    `🔗 <a href="${targetUrl}"><b>BẤM VÀO ĐÂY ĐỂ XEM SHOP NGAY TRÊN SHOPEE</b></a>`;
+
+  try {
+    const msgUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    const res = await fetch(msgUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: 'HTML',
+        disable_web_page_preview: false
+      })
+    });
+    if (res.ok) {
+      addLog('success', `Đã bắn thông báo Telegram: [${shopName}] biến động +${added > 0 ? added : 1} SP`);
     } else {
       const errJson = await res.json().catch(() => ({}));
       addLog('alert', `Lỗi gửi Telegram: ${errJson.description || res.status}`);
