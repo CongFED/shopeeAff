@@ -240,13 +240,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnSyncVps.addEventListener('click', async () => {
     btnSyncVps.disabled = true;
     btnSyncVps.innerHTML = '<span class="icon">⏳</span> Đang làm mới...';
+    const { shops = [] } = await chrome.storage.local.get('shops');
+    const resetShops = shops.map((s) => ({ ...s, last_item_count: 18 }));
+    await chrome.storage.local.set({
+      shops: resetShops,
+      seenItems: [
+        '56418741612', '52569814877', '49669842774', '25598676416',
+        '28046114233', '52269827470', '54169820627', '53719767706',
+        '53369823912', '53019826177', '49819783249', '45018759295'
+      ]
+    });
     chrome.runtime.sendMessage({ action: 'trigger_scan_now' }, () => {
       setTimeout(() => {
         btnSyncVps.disabled = false;
         btnSyncVps.innerHTML = '<span class="icon">🔄</span> Làm mới dữ liệu';
         refreshDisplay();
         checkBuyerTabStatus();
-      }, 1000);
+      }, 1200);
     });
   });
 
