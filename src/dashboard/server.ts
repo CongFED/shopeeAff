@@ -112,6 +112,31 @@ export function startDashboard(
       return sendJson(200, products);
     }
 
+    if (pathname === '/api/sync/products' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', async () => {
+        try {
+          const { shopId, products } = JSON.parse(body);
+          if (!shopId || !Array.isArray(products)) {
+            return sendJson(400, { error: 'shopId and products array required' });
+          }
+          const processResult = productService.processShopProducts(String(shopId), products);
+          if (processResult.newProducts.length > 0) {
+            await monitorEngine.dispatchPendingNotifications();
+          }
+          sendJson(200, {
+            success: true,
+            newCount: processResult.newProducts.length,
+            baselineCount: processResult.baselineCount,
+          });
+        } catch (err: any) {
+          sendJson(400, { error: err.message });
+        }
+      });
+      return;
+    }
+
     if (pathname === '/api/runs' && req.method === 'GET') {
       const db = getDatabase();
       const runs = db.prepare('SELECT * FROM check_runs ORDER BY id DESC LIMIT 10').all();

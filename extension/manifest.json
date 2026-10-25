@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Shopee Realtime Product Monitor & Tele Bot",
+  "version": "1.0.0",
+  "description": "Tự động phát hiện sản phẩm mới từ 200+ shop Shopee và gửi cảnh báo về Telegram tức thì (100% Miễn phí).",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icons/icon128.png",
+    "default_title": "Shopee Realtime Monitor"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://*.shopee.vn/*",
+    "https://api.telegram.org/*",
+    "http://36.50.26.72:3000/*",
+    "http://localhost:3000/*"
+  ]
+}

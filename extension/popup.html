@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shopee Monitor Pro</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo-group">
+        <div class="logo-icon">🛍️</div>
+        <div>
+          <h1 class="logo-title">Shopee Monitor <span class="badge-pro">PRO</span></h1>
+          <p class="logo-subtitle">Real-time New Product Hunter</p>
+        </div>
+      </div>
+      <div class="toggle-switch-wrapper">
+        <label class="switch">
+          <input type="checkbox" id="masterToggle" checked>
+          <span class="slider round"></span>
+        </label>
+      </div>
+    </header>
+
+    <!-- Stats Grid -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Trạng thái</div>
+        <div class="stat-value status-active" id="statusBadge">
+          <span class="pulse-dot"></span> <span id="statusText">Đang chạy</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Shop theo dõi</div>
+        <div class="stat-value" id="totalShopsCount">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">SP Mới hôm nay</div>
+        <div class="stat-value highlight" id="newProductsToday">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Chu kỳ quét</div>
+        <div class="stat-value" id="cycleIntervalDisplay">10s</div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="tab-nav">
+      <button class="tab-btn active" data-tab="tab-monitor">⚡ Giám sát</button>
+      <button class="tab-btn" data-tab="tab-shops">🏪 Danh sách Shop (<span id="tabShopsCount">0</span>)</button>
+      <button class="tab-btn" data-tab="tab-settings">⚙️ Cài đặt</button>
+    </div>
+
+    <!-- TAB 1: Giám Sát & Logs -->
+    <div class="tab-content active" id="tab-monitor">
+      <div class="action-bar">
+        <button class="btn btn-primary" id="btnScanNow">
+          <span class="icon">🚀</span> Quét ngay
+        </button>
+        <button class="btn btn-secondary" id="btnSyncVps">
+          <span class="icon">☁️</span> Đồng bộ từ VPS
+        </button>
+        <button class="btn btn-ghost" id="btnClearLogs" title="Xóa nhật ký">🗑️</button>
+      </div>
+
+      <div class="logs-card">
+        <div class="logs-header">
+          <span>Nhật ký thời gian thực</span>
+          <span class="log-meta" id="lastCheckTime">Chưa quét</span>
+        </div>
+        <div class="logs-container" id="logsList">
+          <div class="log-entry log-info">
+            <span class="log-time">[Hệ thống]</span> Khởi tạo Shopee Extension thành công. Sẵn sàng giám sát!
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: Quản lý Shop -->
+    <div class="tab-content" id="tab-shops">
+      <div class="add-shop-form">
+        <input type="text" id="inputNewShopUrl" placeholder="Nhập Link Shop hoặc Username Shopee..." class="input-text">
+        <input type="text" id="inputNewShopName" placeholder="Tên gợi nhớ (tùy chọn)" class="input-text">
+        <button class="btn btn-primary" id="btnAddShop">+ Thêm Shop</button>
+      </div>
+
+      <div class="shops-list-wrapper">
+        <div class="shops-list" id="shopsListContainer">
+          <!-- Rendered dynamically -->
+          <div class="empty-state">Đang tải danh sách shop...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: Cài đặt -->
+    <div class="tab-content" id="tab-settings">
+      <div class="settings-card">
+        <h3 class="section-title">🤖 Cấu hình Telegram</h3>
+        <div class="form-group">
+          <label>Bot Token:</label>
+          <input type="text" id="settingTeleToken" class="input-text" placeholder="Bot Token từ @BotFather">
+        </div>
+        <div class="form-group">
+          <label>Chat ID / Group ID:</label>
+          <input type="text" id="settingTeleChatId" class="input-text" placeholder="Ví dụ: -1004358778817">
+        </div>
+        <button class="btn btn-secondary btn-sm" id="btnTestTele">✉️ Gửi tin nhắn kiểm tra thử</button>
+      </div>
+
+      <div class="settings-card">
+        <h3 class="section-title">☁️ Cấu hình VPS Server</h3>
+        <div class="form-group">
+          <label>URL VPS API:</label>
+          <input type="text" id="settingVpsUrl" class="input-text" placeholder="http://36.50.26.72:3000">
+        </div>
+        <div class="form-group">
+          <label>Tần suất quét tự động:</label>
+          <select id="settingInterval" class="input-select">
+            <option value="10">10 giây (Siêu tốc)</option>
+            <option value="20">20 giây</option>
+            <option value="30">30 giây</option>
+            <option value="60">1 phút</option>
+            <option value="120">2 phút</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" id="btnSaveSettings">💾 Lưu cài đặt</button>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>100% Miễn phí &bull; Không bị chặn DataDome &bull; Mạng dân cư</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
