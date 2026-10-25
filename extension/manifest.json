@@ -21,7 +21,8 @@
     "alarms",
     "notifications",
     "cookies",
-    "declarativeNetRequest"
+    "declarativeNetRequest",
+    "offscreen"
   ],
   "host_permissions": [
     "https://*.shopee.vn/*",

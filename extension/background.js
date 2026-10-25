@@ -26,6 +26,7 @@ const DEFAULT_SETTINGS = {
   ],
   newProductsToday: 0,
   lastCheckTime: null,
+  knownProducts: {},
   logs: []
 };
 
@@ -59,20 +60,51 @@ async function setupNetRules() {
 }
 setupNetRules();
 
+// Ensure Offscreen Document runs continuously (Never suspended by Chrome)
+async function ensureOffscreen() {
+  if (!chrome.offscreen) return;
+  try {
+    const existing = await chrome.offscreen.hasDocument().catch(() => false);
+    if (!existing) {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['BLOBS'],
+        justification: 'Keep 10s background realtime monitor alive'
+      });
+      console.log('Offscreen document created successfully');
+    }
+  } catch (e) {
+    console.warn('Offscreen init notice:', e);
+  }
+}
+ensureOffscreen();
+
+// Listen to port connection from Offscreen Document
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'heartbeat_port') {
+    port.onMessage.addListener((msg) => {
+      if (msg.action === 'heartbeat_tick') {
+        runScanCycle();
+      }
+    });
+  }
+});
+
 // Initialize Storage on install
 chrome.runtime.onInstalled.addListener(async () => {
   setupNetRules();
+  ensureOffscreen();
   const data = await chrome.storage.local.get(null);
   const initial = { ...DEFAULT_SETTINGS, ...data };
   await chrome.storage.local.set(initial);
   addLog('success', 'Extension đã được cài đặt và kích hoạt thành công!');
   setupAlarm(initial.intervalSeconds);
+  startFastLoop();
 });
 
-// Setup Alarm and Polling Loop
+// Setup Alarm and Polling Loop (Fallback)
 function setupAlarm(intervalSec) {
   chrome.alarms.clear('shopee_scan_alarm');
-  // Chrome alarms have 1 min min resolution, but we also use setTimeout loop while active
   chrome.alarms.create('shopee_scan_alarm', {
     periodInMinutes: Math.max(1, Math.round(intervalSec / 60))
   });
@@ -80,6 +112,7 @@ function setupAlarm(intervalSec) {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'shopee_scan_alarm') {
+    ensureOffscreen();
     runScanCycle();
   }
 });
@@ -89,6 +122,7 @@ let isLoopRunning = false;
 async function startFastLoop() {
   if (isLoopRunning) return;
   isLoopRunning = true;
+  ensureOffscreen();
   while (isLoopRunning) {
     const { isActive, intervalSeconds } = await chrome.storage.local.get(['isActive', 'intervalSeconds']);
     if (!isActive) {
@@ -223,78 +257,121 @@ async function scanSingleShop(shop, state) {
     const hasSigChanged = Boolean(lastSig && categorySignature && lastSig !== categorySignature);
     const hasNewItems = hasCountIncreased || hasSigChanged;
 
-    if (hasNewItems || isFirstRun) {
-      if (!isFirstRun) {
-        addLog('info', `[${shop.shop_name}] Phát hiện số lượng thay đổi: ${lastItemCount || 0} ➔ ${liveItemCount} SP. Đang lấy chi tiết...`);
-      }
+    // Fetch current products for new/updated detection
+    const products = await fetchShopProducts(numericShopId, shop.shop_url);
+    const seenSet = new Set(state.seenItems || []);
+    const knownProducts = state.knownProducts || {};
+    let hasUpdatedProduct = false;
 
-      // Fetch products using get_shop_seo & rcmd_items
-      const products = await fetchShopProducts(numericShopId, shop.shop_url);
-      const seenSet = new Set(state.seenItems || []);
-
-      const newProductsFound = [];
-
-      for (const p of products) {
-        if (!seenSet.has(p.itemId)) {
-          seenSet.add(p.itemId);
-          newProductsFound.push(p);
+    // 1. Check for product updates (e.g. price change, name change)
+    for (const p of products) {
+      const old = knownProducts[p.itemId];
+      if (old && !isFirstRun) {
+        if (p.price && old.price && p.price !== old.price) {
+          hasUpdatedProduct = true;
+          addLog(
+            'alert',
+            `🚨 [${shop.shop_name}] SẢN PHẨM ĐỔI GIÁ: ${p.name} (${old.price.toLocaleString('vi-VN')}₫ ➔ ${p.price.toLocaleString('vi-VN')}₫)`
+          );
+          await sendProductUpdateAlert(
+            state.teleToken,
+            state.teleChatId,
+            shop.shop_name,
+            p,
+            `Đổi giá: ${old.price.toLocaleString('vi-VN')} ₫ ➔ ${p.price.toLocaleString('vi-VN')} ₫`
+          );
+          showDesktopNotification(shop.shop_name, {
+            name: `Đổi giá: ${p.name}`,
+            price: p.price
+          });
+        } else if (p.name && old.name && p.name !== old.name) {
+          hasUpdatedProduct = true;
+          addLog('alert', `🚨 [${shop.shop_name}] SẢN PHẨM ĐỔI TÊN: "${old.name}" ➔ "${p.name}"`);
+          await sendProductUpdateAlert(
+            state.teleToken,
+            state.teleChatId,
+            shop.shop_name,
+            p,
+            `Đổi tên: ${p.name}`
+          );
+          showDesktopNotification(shop.shop_name, {
+            name: `Đổi tên: ${p.name}`,
+            price: p.price
+          });
         }
       }
+      knownProducts[p.itemId] = { name: p.name, price: p.price, imageUrl: p.imageUrl, url: p.url };
+    }
 
-      // Update state
-      const updatedShops = state.shops.map((s) =>
-        s.id === shop.id
-          ? {
-              ...s,
-              shop_id: numericShopId,
-              last_item_count: liveItemCount,
-              last_category_sig: categorySignature
-            }
-          : s
+    // 2. Check for new products
+    const newProductsFound = [];
+    for (const p of products) {
+      if (!seenSet.has(p.itemId)) {
+        seenSet.add(p.itemId);
+        newProductsFound.push(p);
+      }
+    }
+
+    // Update state
+    const updatedShops = state.shops.map((s) =>
+      s.id === shop.id
+        ? {
+            ...s,
+            shop_id: numericShopId,
+            last_item_count: liveItemCount,
+            last_category_sig: categorySignature
+          }
+        : s
+    );
+
+    await chrome.storage.local.set({
+      shops: updatedShops,
+      seenItems: Array.from(seenSet),
+      knownProducts
+    });
+
+    if (isFirstRun) {
+      addLog('info', `[${shop.shop_name}] Đã đồng bộ mốc ban đầu: ${liveItemCount} SP (${products.length} SP đã lưu).`);
+    } else if (newProductsFound.length > 0) {
+      addLog('alert', `🚨 [${shop.shop_name}] PHÁT HIỆN ${newProductsFound.length} SẢN PHẨM MỚI!`);
+
+      // Send alerts for each new product
+      for (const np of newProductsFound) {
+        await sendTelegramAlert(state.teleToken, state.teleChatId, shop.shop_name, np);
+        showDesktopNotification(shop.shop_name, np);
+      }
+
+      // Increment today count
+      const todayCount = (state.newProductsToday || 0) + newProductsFound.length;
+      await chrome.storage.local.set({ newProductsToday: todayCount });
+
+      // Sync to VPS Server
+      syncProductsToVps(state.vpsUrl, numericShopId, products).catch(() => {});
+    } else if (hasNewItems) {
+      // hasNewItems is true (e.g. 14 -> 15 SP), but search index didn't list specific item details yet
+      // GUARANTEED INSTANT ALERT TO TELEGRAM!
+      addLog('alert', `🚨 [${shop.shop_name}] PHÁT HIỆN SẢN PHẨM MỚI (${lastItemCount || 0} ➔ ${liveItemCount} SP)!`);
+      await sendShopCountAlert(
+        state.teleToken,
+        state.teleChatId,
+        shop.shop_name,
+        shop.shop_url,
+        lastItemCount || 0,
+        liveItemCount
       );
-
-      await chrome.storage.local.set({
-        shops: updatedShops,
-        seenItems: Array.from(seenSet)
+      showDesktopNotification(shop.shop_name, {
+        name: `Shop vừa đăng sản phẩm mới! (${lastItemCount || 0} ➔ ${liveItemCount} SP)`,
+        price: 0
       });
 
-      if (isFirstRun) {
-        addLog('info', `[${shop.shop_name}] Đã đồng bộ mốc ban đầu: ${liveItemCount} SP (${products.length} SP đã lưu).`);
-      } else if (newProductsFound.length > 0) {
-        addLog('alert', `🚨 [${shop.shop_name}] PHÁT HIỆN ${newProductsFound.length} SẢN PHẨM MỚI!`);
-
-        // Send alerts for each new product
-        for (const np of newProductsFound) {
-          await sendTelegramAlert(state.teleToken, state.teleChatId, shop.shop_name, np);
-          showDesktopNotification(shop.shop_name, np);
-        }
-
-        // Increment today count
-        const todayCount = (state.newProductsToday || 0) + newProductsFound.length;
-        await chrome.storage.local.set({ newProductsToday: todayCount });
-
-        // Sync to VPS Server
-        syncProductsToVps(state.vpsUrl, numericShopId, products).catch(() => {});
-      } else {
-        // hasNewItems is true (e.g. 14 -> 15 SP), but search index didn't list specific item details yet
-        // GUARANTEED INSTANT ALERT TO TELEGRAM!
-        addLog('alert', `🚨 [${shop.shop_name}] PHÁT HIỆN SẢN PHẨM MỚI (${lastItemCount || 0} ➔ ${liveItemCount} SP)!`);
-        await sendShopCountAlert(
-          state.teleToken,
-          state.teleChatId,
-          shop.shop_name,
-          shop.shop_url,
-          lastItemCount || 0,
-          liveItemCount
-        );
-        showDesktopNotification(shop.shop_name, {
-          name: `Shop vừa đăng sản phẩm mới! (${lastItemCount || 0} ➔ ${liveItemCount} SP)`,
-          price: 0
-        });
-
-        const addedCount = Math.max(1, liveItemCount - (lastItemCount || 0));
-        const todayCount = (state.newProductsToday || 0) + addedCount;
-        await chrome.storage.local.set({ newProductsToday: todayCount });
+      const addedCount = Math.max(1, liveItemCount - (lastItemCount || 0));
+      const todayCount = (state.newProductsToday || 0) + addedCount;
+      await chrome.storage.local.set({ newProductsToday: todayCount });
+    } else if (!hasUpdatedProduct) {
+      // Heartbeat logging: every 6 cycles (~60s), log a quiet heartbeat so user sees active status
+      shop._tickCount = ((shop._tickCount || 0) + 1) % 6;
+      if (shop._tickCount === 0) {
+        addLog('info', `[${shop.shop_name}] Đang giám sát realtime (${liveItemCount} SP) - Hoạt động bình thường.`);
       }
     }
   } catch (err) {
@@ -520,6 +597,60 @@ async function sendShopCountAlert(botToken, chatId, shopName, shopUrl, oldCount,
     }
   } catch (err) {
     addLog('alert', `Lỗi mạng khi gửi Telegram: ${err.message}`);
+  }
+}
+
+// Product Update Telegram Alert (Fires when price, name or info is edited)
+async function sendProductUpdateAlert(botToken, chatId, shopName, item, updateDetail) {
+  if (!botToken || !chatId) return;
+
+  const timeStr = new Date().toLocaleString('vi-VN');
+  const priceFormatted = item.price ? `${item.price.toLocaleString('vi-VN')} ₫` : 'Liên hệ';
+
+  const caption =
+    `🔔 <b>SẢN PHẨM CẬP NHẬT THÔNG TIN!</b>\n\n` +
+    `🏪 <b>Shop:</b> ${escapeHtml(shopName)}\n` +
+    `📦 <b>Sản phẩm:</b> ${escapeHtml(item.name)}\n` +
+    `📝 <b>Chi tiết cập nhật:</b> <code>${escapeHtml(updateDetail)}</code>\n` +
+    `💰 <b>Giá hiện tại:</b> <code>${priceFormatted}</code>\n` +
+    `⏰ <b>Thời gian:</b> ${timeStr}\n\n` +
+    `🔗 <a href="${item.url}"><b>XEM SẢN PHẨM TRÊN SHOPEE</b></a>`;
+
+  try {
+    if (item.imageUrl) {
+      const photoUrl = `https://api.telegram.org/bot${botToken}/sendPhoto`;
+      const res = await fetch(photoUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          photo: item.imageUrl,
+          caption: caption,
+          parse_mode: 'HTML'
+        })
+      });
+      if (res.ok) {
+        addLog('success', `Đã bắn thông báo cập nhật Telegram: ${item.name}`);
+        return;
+      }
+    }
+
+    const msgUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    const res = await fetch(msgUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: caption,
+        parse_mode: 'HTML',
+        disable_web_page_preview: false
+      })
+    });
+    if (res.ok) {
+      addLog('success', `Đã bắn thông báo cập nhật Telegram: ${item.name}`);
+    }
+  } catch (err) {
+    addLog('alert', `Lỗi gửi Telegram khi cập nhật SP: ${err.message}`);
   }
 }
 

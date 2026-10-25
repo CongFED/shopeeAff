@@ -33,6 +33,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const state = await chrome.storage.local.get(null);
   applyState(state);
 
+  // Trigger immediate scan when popup opens
+  chrome.runtime.sendMessage({ action: 'trigger_scan_now' }).catch(() => {});
+
   // Tab Navigation
   document.querySelectorAll('.tab-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
