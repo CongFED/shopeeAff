@@ -82,15 +82,27 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
       return this.browser;
     }
 
-    logger.info(`Starting Stealth Chrome (${this.chromePath})...`);
+    const isLinux = process.platform === 'linux';
+    const display = process.env.DISPLAY || (isLinux ? ':99' : undefined);
+    const useHeadless = isLinux && display ? false : 'new';
+
+    logger.info(`Starting Stealth Chrome (${this.chromePath}, headless: ${useHeadless}, DISPLAY: ${display || 'none'})...`);
     this.browser = await (puppeteer as any).launch({
       executablePath: this.chromePath,
-      headless: 'new',
+      headless: useHeadless,
+      env: {
+        ...process.env,
+        ...(display ? { DISPLAY: display } : {}),
+      },
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-gpu',
+        '--window-size=1440,900',
+        '--enable-webgl',
+        '--ignore-gpu-blocklist',
+        '--use-gl=swiftshader',
+        '--enable-unsafe-swiftshader',
         '--lang=vi-VN,vi',
       ],
     });
@@ -480,6 +492,20 @@ export class ShopeeBrowserProvider implements IShopeeProvider {
         // Scroll down slightly to trigger lazy-load rendering
         await this.safeEvaluate(page, () => window.scrollBy(0, 1000));
         await sleep(2000);
+
+        // Fallback: If still fewer than 2 products (decor home page), visit direct shop search URL sorted by ctime
+        if (buyerItems.length <= 1 && targetShopNumericId) {
+          const searchUrl = `https://shopee.vn/search?shop=${targetShopNumericId}&sortBy=ctime`;
+          try {
+            logger.info(`Navigating to shop search grid: ${searchUrl}`);
+            await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            await sleep(4000);
+            await this.safeEvaluate(page, () => window.scrollBy(0, 1000));
+            await sleep(2000);
+          } catch (e: any) {
+            logger.debug(`Shop search fallback notice: ${e.message}`);
+          }
+        }
       }
     } catch (e: any) {
       logger.debug(`Navigation step notice: ${e.message}`);
