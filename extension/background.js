@@ -126,12 +126,31 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+// Auto-inject content script into already opened Seller Centre tabs
+async function injectContentScriptIntoOpenTabs() {
+  if (!chrome.tabs || !chrome.scripting) return;
+  try {
+    const tabs = await chrome.tabs.query({
+      url: ['https://banhang.shopee.vn/*', 'https://shopee.vn/*']
+    });
+    for (const tab of tabs) {
+      if (tab.id) {
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content.js']
+        }).catch(() => {});
+      }
+    }
+  } catch (e) {}
+}
+
 // High-speed runner loop (10s interval support)
 let isLoopRunning = false;
 async function startFastLoop() {
   if (isLoopRunning) return;
   isLoopRunning = true;
   ensureOffscreen();
+  injectContentScriptIntoOpenTabs();
   while (isLoopRunning) {
     const { isActive, intervalSeconds } = await chrome.storage.local.get(['isActive', 'intervalSeconds']);
     if (!isActive) {
@@ -359,21 +378,19 @@ async function scanSingleShop(shop, state) {
       // Sync to VPS Server
       syncProductsToVps(state.vpsUrl, numericShopId, products).catch(() => {});
     } else if (hasNewItems) {
-      // hasNewItems is true (e.g. 14 -> 15 SP), but search index didn't list specific item details yet
-      // GUARANTEED INSTANT ALERT TO TELEGRAM!
+      // Find category that has images or newest count
+      const targetCat = categories.find((c) => c.image && c.total > 0) || categories[0];
+      const newCard = {
+        itemId: 'cat_' + (targetCat?.shop_category_id || Date.now()),
+        name: targetCat ? `[Sản phẩm mới] Nhóm: "${targetCat.display_name}" (+${liveItemCount - (lastItemCount || 0)} SP)` : `Sản phẩm mới từ ${shop.shop_name}`,
+        price: 0,
+        url: targetCat ? `https://shopee.vn/shop/${numericShopId}/search?shopCollection=${targetCat.shop_category_id}` : (shop.shop_url || `https://shopee.vn/shop/${numericShopId}`),
+        imageUrl: targetCat?.image ? `https://down-vn.img.susercontent.com/file/${targetCat.image}` : undefined
+      };
+
       addLog('alert', `🚨 [${shop.shop_name}] PHÁT HIỆN SẢN PHẨM MỚI (${lastItemCount || 0} ➔ ${liveItemCount} SP)!`);
-      await sendShopCountAlert(
-        state.teleToken,
-        state.teleChatId,
-        shop.shop_name,
-        shop.shop_url,
-        lastItemCount || 0,
-        liveItemCount
-      );
-      showDesktopNotification(shop.shop_name, {
-        name: `Shop vừa đăng sản phẩm mới! (${lastItemCount || 0} ➔ ${liveItemCount} SP)`,
-        price: 0
-      });
+      await sendTelegramAlert(state.teleToken, state.teleChatId, shop.shop_name, newCard);
+      showDesktopNotification(shop.shop_name, newCard);
 
       const addedCount = Math.max(1, liveItemCount - (lastItemCount || 0));
       const todayCount = (state.newProductsToday || 0) + addedCount;
@@ -395,45 +412,10 @@ async function fetchShopProducts(shopId, shopUrl) {
   const seen = new Set();
   const referer = shopUrl || `https://shopee.vn/shop/${shopId}`;
 
-  // 1. get_shop_seo (Super reliable, returns latest items without captcha)
-  try {
-    const r = await fetch(`https://shopee.vn/api/v4/shop/get_shop_seo?shopid=${shopId}`, {
-      credentials: 'include',
-      headers: {
-        'x-api-source': 'pc',
-        'x-requested-with': 'XMLHttpRequest',
-        'x-shopee-language': 'vi',
-        'referer': referer
-      }
-    });
-    if (r.ok) {
-      const data = await r.json();
-      const list = data.data?.items || [];
-      for (const it of list) {
-        const item = it.item_basic || it;
-        if (item && item.itemid && !seen.has(String(item.itemid))) {
-          seen.add(String(item.itemid));
-          let price = item.price || item.price_min || 0;
-          if (price > 10000000) price = Math.round(price / 100000);
-          const imageId = item.image || item.images?.[0];
-          items.push({
-            itemId: String(item.itemid),
-            shopId: String(item.shopid || shopId),
-            name: item.name || 'Sản phẩm mới',
-            url: `https://shopee.vn/product/${item.shopid || shopId}/${item.itemid}`,
-            price,
-            imageUrl: imageId ? (imageId.startsWith('http') ? imageId : `https://down-vn.img.susercontent.com/file/${imageId}`) : undefined,
-            ctime: item.ctime || Math.floor(Date.now() / 1000)
-          });
-        }
-      }
-    }
-  } catch (e) {}
-
-  // 2. rcmd_items (Main category tab)
+  // 1. rcmd_items (Product tab sorted by newest: sort_type=1)
   try {
     const r = await fetch(
-      `https://shopee.vn/api/v4/shop/rcmd_items?bundle=shop_page_category_tab_main&limit=30&offset=0&shop_id=${shopId}`,
+      `https://shopee.vn/api/v4/shop/rcmd_items?bundle=shop_page_product_tab&limit=30&offset=0&shop_id=${shopId}&sort_type=1`,
       {
         credentials: 'include',
         headers: {
@@ -468,10 +450,10 @@ async function fetchShopProducts(shopId, shopUrl) {
     }
   } catch (e) {}
 
-  // 3. search_items (Sorted by newest)
+  // 2. search_items (Sorted by ctime desc - creation time)
   try {
     const r = await fetch(
-      `https://shopee.vn/api/v4/search/search_items?by=pop&limit=30&match_id=${shopId}&newest=0&order=desc&page_type=shop&scenario=PAGE_OTHERS&version=2`,
+      `https://shopee.vn/api/v4/search/search_items?by=ctime&limit=30&match_id=${shopId}&newest=0&order=desc&page_type=shop&scenario=PAGE_OTHERS&version=2`,
       {
         credentials: 'include',
         headers: {
@@ -485,6 +467,79 @@ async function fetchShopProducts(shopId, shopUrl) {
     if (r.ok) {
       const data = await r.json();
       const list = data.items || [];
+      for (const it of list) {
+        const item = it.item_basic || it;
+        if (item && item.itemid && !seen.has(String(item.itemid))) {
+          seen.add(String(item.itemid));
+          let price = item.price || item.price_min || 0;
+          if (price > 10000000) price = Math.round(price / 100000);
+          const imageId = item.image || item.images?.[0];
+          items.push({
+            itemId: String(item.itemid),
+            shopId: String(item.shopid || shopId),
+            name: item.name || 'Sản phẩm mới',
+            url: `https://shopee.vn/product/${item.shopid || shopId}/${item.itemid}`,
+            price,
+            imageUrl: imageId ? (imageId.startsWith('http') ? imageId : `https://down-vn.img.susercontent.com/file/${imageId}`) : undefined,
+            ctime: item.ctime || Math.floor(Date.now() / 1000)
+          });
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 3. get_shop_seo (Super reliable, returns latest items without captcha)
+  try {
+    const r = await fetch(`https://shopee.vn/api/v4/shop/get_shop_seo?shopid=${shopId}`, {
+      credentials: 'include',
+      headers: {
+        'x-api-source': 'pc',
+        'x-requested-with': 'XMLHttpRequest',
+        'x-shopee-language': 'vi',
+        'referer': referer
+      }
+    });
+    if (r.ok) {
+      const data = await r.json();
+      const list = data.data?.items || [];
+      for (const it of list) {
+        const item = it.item_basic || it;
+        if (item && item.itemid && !seen.has(String(item.itemid))) {
+          seen.add(String(item.itemid));
+          let price = item.price || item.price_min || 0;
+          if (price > 10000000) price = Math.round(price / 100000);
+          const imageId = item.image || item.images?.[0];
+          items.push({
+            itemId: String(item.itemid),
+            shopId: String(item.shopid || shopId),
+            name: item.name || 'Sản phẩm mới',
+            url: `https://shopee.vn/product/${item.shopid || shopId}/${item.itemid}`,
+            price,
+            imageUrl: imageId ? (imageId.startsWith('http') ? imageId : `https://down-vn.img.susercontent.com/file/${imageId}`) : undefined,
+            ctime: item.ctime || Math.floor(Date.now() / 1000)
+          });
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 4. rcmd_items (Main category tab fallback)
+  try {
+    const r = await fetch(
+      `https://shopee.vn/api/v4/shop/rcmd_items?bundle=shop_page_category_tab_main&limit=30&offset=0&shop_id=${shopId}`,
+      {
+        credentials: 'include',
+        headers: {
+          'x-api-source': 'pc',
+          'x-requested-with': 'XMLHttpRequest',
+          'x-shopee-language': 'vi',
+          'referer': referer
+        }
+      }
+    );
+    if (r.ok) {
+      const data = await r.json();
+      const list = data.data?.items || data.items || [];
       for (const it of list) {
         const item = it.item_basic || it;
         if (item && item.itemid && !seen.has(String(item.itemid))) {
@@ -794,6 +849,10 @@ async function handleSellerCentreSync(liveTotal, products) {
           await sendTelegramAlert(data.teleToken, data.teleChatId, shop.shop_name, np);
           showDesktopNotification(shop.shop_name, np);
         }
+      } else if (products.length > 0) {
+        const np = products[0];
+        await sendTelegramAlert(data.teleToken, data.teleChatId, shop.shop_name, np);
+        showDesktopNotification(shop.shop_name, np);
       } else {
         await sendShopCountAlert(
           data.teleToken,

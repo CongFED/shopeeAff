@@ -22,7 +22,9 @@
     "notifications",
     "cookies",
     "declarativeNetRequest",
-    "offscreen"
+    "offscreen",
+    "scripting",
+    "tabs"
   ],
   "content_scripts": [
     {
