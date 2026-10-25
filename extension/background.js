@@ -61,20 +61,29 @@ async function setupNetRules() {
 setupNetRules();
 
 // Ensure Offscreen Document runs continuously (Never suspended by Chrome)
+let isCreatingOffscreen = false;
 async function ensureOffscreen() {
-  if (!chrome.offscreen) return;
+  if (!chrome.offscreen || !chrome.offscreen.createDocument) return;
+  if (isCreatingOffscreen) return;
+  isCreatingOffscreen = true;
+
   try {
-    const existing = await chrome.offscreen.hasDocument().catch(() => false);
-    if (!existing) {
+    let hasDoc = false;
+    if (typeof chrome.offscreen.hasDocument === 'function') {
+      hasDoc = await chrome.offscreen.hasDocument();
+    }
+    if (!hasDoc) {
       await chrome.offscreen.createDocument({
         url: 'offscreen.html',
-        reasons: ['BLOBS'],
+        reasons: ['DOM_SCRAPING'],
         justification: 'Keep 10s background realtime monitor alive'
       });
-      console.log('Offscreen document created successfully');
+      addLog('info', 'Đã kích hoạt engine chạy ngầm 24/7 (Offscreen).');
     }
   } catch (e) {
-    console.warn('Offscreen init notice:', e);
+    // Already exists or not supported
+  } finally {
+    isCreatingOffscreen = false;
   }
 }
 ensureOffscreen();
@@ -146,9 +155,11 @@ async function addLog(type, message) {
 
 // Core Shop Scanner
 let isScanning = false;
+let globalScanTick = 0;
 async function runScanCycle() {
   if (isScanning) return;
   isScanning = true;
+  globalScanTick++;
 
   try {
     const data = await chrome.storage.local.get(null);
@@ -368,10 +379,9 @@ async function scanSingleShop(shop, state) {
       const todayCount = (state.newProductsToday || 0) + addedCount;
       await chrome.storage.local.set({ newProductsToday: todayCount });
     } else if (!hasUpdatedProduct) {
-      // Heartbeat logging: every 6 cycles (~60s), log a quiet heartbeat so user sees active status
-      shop._tickCount = ((shop._tickCount || 0) + 1) % 6;
-      if (shop._tickCount === 0) {
-        addLog('info', `[${shop.shop_name}] Đang giám sát realtime (${liveItemCount} SP) - Hoạt động bình thường.`);
+      // Heartbeat logging: every 3 cycles (~30s), log a heartbeat so user sees active realtime scanning
+      if (globalScanTick % 3 === 0) {
+        addLog('info', `[${shop.shop_name}] Giám sát realtime (${liveItemCount} SP) - Chưa có biến động.`);
       }
     }
   } catch (err) {
