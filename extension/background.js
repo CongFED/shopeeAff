@@ -129,32 +129,75 @@ async function scanSingleShop(shop, state) {
       return;
     }
 
-    // Step 1: Ultra-fast base check (returns item_count)
-    const baseRes = await fetch(`https://shopee.vn/api/v4/shop/get_shop_base_v2?shopid=${numericShopId}`, {
-      headers: {
-        'x-api-source': 'pc',
-        'x-requested-with': 'XMLHttpRequest',
-        'x-shopee-language': 'vi'
-      }
-    });
+    // Step 1: Ultra-fast check via get_categories (100% Free, NO 404, No Anti-bot block)
+    let liveItemCount = null;
+    let categorySignature = '';
 
-    if (!baseRes.ok) {
-      addLog('warn', `Shop ${shop.shop_name} phản hồi HTTP ${baseRes.status}`);
-      return;
+    try {
+      const catRes = await fetch(`https://shopee.vn/api/v4/shop/get_categories?shopid=${numericShopId}`, {
+        credentials: 'include',
+        headers: {
+          'x-api-source': 'pc',
+          'x-requested-with': 'XMLHttpRequest',
+          'x-shopee-language': 'vi',
+          'referer': shop.shop_url || `https://shopee.vn/shop/${numericShopId}`
+        }
+      });
+
+      if (catRes.ok) {
+        const catData = await catRes.json();
+        const cats = catData.data?.shop_categories || [];
+        liveItemCount = cats.reduce((sum, c) => sum + (c.total || 0), 0);
+        categorySignature = cats.map((c) => `${c.shop_category_id}:${c.total}`).join(',');
+      }
+    } catch (e) {}
+
+    // Fallback if get_categories failed: POST get_shop_base_v2
+    if (liveItemCount === null) {
+      const usernameMatch = shop.shop_url ? shop.shop_url.match(/shopee\.vn\/([^/?#]+)/) : null;
+      const username = usernameMatch ? usernameMatch[1] : '';
+      const baseRes = await fetch('https://shopee.vn/api/v4/shop/get_shop_base_v2', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-source': 'pc',
+          'x-requested-with': 'XMLHttpRequest',
+          'x-shopee-language': 'vi',
+          'referer': shop.shop_url || `https://shopee.vn/shop/${numericShopId}`
+        },
+        body: JSON.stringify({
+          entry_point: '',
+          request_source: 'pc_shop_home_page',
+          username: username,
+          ...(numericShopId ? { shopid: Number(numericShopId) } : {})
+        })
+      });
+
+      if (baseRes.ok) {
+        const baseData = await baseRes.json();
+        liveItemCount = baseData.data?.item_count || 0;
+      } else {
+        addLog('warn', `Shop ${shop.shop_name} phản hồi HTTP ${baseRes.status}`);
+        return;
+      }
     }
 
-    const baseData = await baseRes.json();
-    const liveItemCount = baseData.data?.item_count || 0;
     const lastItemCount = shop.last_item_count;
+    const lastSig = shop.last_category_sig;
 
-    // If item count increased OR first check -> Fetch products!
+    // Check if item count increased OR category signature changed OR first run
     const isFirstRun = lastItemCount === undefined || lastItemCount === null;
-    const hasNewItems = liveItemCount > (lastItemCount || 0);
+    const hasCountIncreased = liveItemCount > (lastItemCount || 0);
+    const hasSigChanged = Boolean(lastSig && categorySignature && lastSig !== categorySignature);
+    const hasNewItems = hasCountIncreased || hasSigChanged;
 
     if (hasNewItems || isFirstRun) {
-      addLog('info', `[${shop.shop_name}] Phát hiện số lượng thay đổi: ${lastItemCount || 0} ➔ ${liveItemCount} SP. Đang lấy chi tiết...`);
+      if (!isFirstRun) {
+        addLog('info', `[${shop.shop_name}] Phát hiện số lượng thay đổi: ${lastItemCount || 0} ➔ ${liveItemCount} SP. Đang lấy chi tiết...`);
+      }
 
-      // Fetch products using rcmd_items & get_shop_seo
+      // Fetch products using get_shop_seo & rcmd_items
       const products = await fetchShopProducts(numericShopId, shop.shop_url);
       const seenSet = new Set(state.seenItems || []);
 
@@ -169,7 +212,14 @@ async function scanSingleShop(shop, state) {
 
       // Update state
       const updatedShops = state.shops.map((s) =>
-        s.id === shop.id ? { ...s, shop_id: numericShopId, last_item_count: liveItemCount } : s
+        s.id === shop.id
+          ? {
+              ...s,
+              shop_id: numericShopId,
+              last_item_count: liveItemCount,
+              last_category_sig: categorySignature
+            }
+          : s
       );
 
       await chrome.storage.local.set({
@@ -178,7 +228,7 @@ async function scanSingleShop(shop, state) {
       });
 
       if (isFirstRun) {
-        addLog('info', `[${shop.shop_name}] Đã đồng bộ mốc ban đầu: ${products.length} sản phẩm.`);
+        addLog('info', `[${shop.shop_name}] Đã đồng bộ mốc ban đầu: ${liveItemCount} SP (${products.length} SP đã lưu).`);
       } else if (newProductsFound.length > 0) {
         addLog('alert', `🚨 [${shop.shop_name}] PHÁT HIỆN ${newProductsFound.length} SẢN PHẨM MỚI!`);
 
@@ -205,68 +255,115 @@ async function scanSingleShop(shop, state) {
 async function fetchShopProducts(shopId, shopUrl) {
   const items = [];
   const seen = new Set();
+  const referer = shopUrl || `https://shopee.vn/shop/${shopId}`;
 
-  // 1. rcmd_items (Main category tab)
+  // 1. get_shop_seo (Super reliable, returns latest items without captcha)
   try {
-    const r = await fetch(
-      `https://shopee.vn/api/v4/shop/rcmd_items?bundle=shop_page_category_tab_main&limit=30&offset=0&shop_id=${shopId}`,
-      {
-        headers: {
-          'x-api-source': 'pc',
-          'x-requested-with': 'XMLHttpRequest',
-          'x-shopee-language': 'vi'
-        }
+    const r = await fetch(`https://shopee.vn/api/v4/shop/get_shop_seo?shopid=${shopId}`, {
+      credentials: 'include',
+      headers: {
+        'x-api-source': 'pc',
+        'x-requested-with': 'XMLHttpRequest',
+        'x-shopee-language': 'vi',
+        'referer': referer
       }
-    );
-    const data = await r.json();
-    const list = data.data?.items || data.items || [];
-    for (const it of list) {
-      const item = it.item_basic || it;
-      if (item && item.itemid && !seen.has(String(item.itemid))) {
-        seen.add(String(item.itemid));
-        let price = item.price || item.price_min || 0;
-        if (price > 1000000) price = Math.round(price / 100000);
-        const imageId = item.image || item.images?.[0];
-        items.push({
-          itemId: String(item.itemid),
-          shopId: String(item.shopid || shopId),
-          name: item.name || 'Sản phẩm mới',
-          url: `https://shopee.vn/product/${item.shopid || shopId}/${item.itemid}`,
-          price,
-          imageUrl: imageId ? (imageId.startsWith('http') ? imageId : `https://down-vn.img.susercontent.com/file/${imageId}`) : undefined,
-          ctime: item.ctime || Math.floor(Date.now() / 1000)
-        });
+    });
+    if (r.ok) {
+      const data = await r.json();
+      const list = data.data?.items || [];
+      for (const it of list) {
+        const item = it.item_basic || it;
+        if (item && item.itemid && !seen.has(String(item.itemid))) {
+          seen.add(String(item.itemid));
+          let price = item.price || item.price_min || 0;
+          if (price > 10000000) price = Math.round(price / 100000);
+          const imageId = item.image || item.images?.[0];
+          items.push({
+            itemId: String(item.itemid),
+            shopId: String(item.shopid || shopId),
+            name: item.name || 'Sản phẩm mới',
+            url: `https://shopee.vn/product/${item.shopid || shopId}/${item.itemid}`,
+            price,
+            imageUrl: imageId ? (imageId.startsWith('http') ? imageId : `https://down-vn.img.susercontent.com/file/${imageId}`) : undefined,
+            ctime: item.ctime || Math.floor(Date.now() / 1000)
+          });
+        }
       }
     }
   } catch (e) {}
 
-  // 2. get_shop_seo (Featured items)
+  // 2. rcmd_items (Main category tab)
   try {
-    const r = await fetch(`https://shopee.vn/api/v4/shop/get_shop_seo?shopid=${shopId}`, {
-      headers: {
-        'x-api-source': 'pc',
-        'x-requested-with': 'XMLHttpRequest',
-        'x-shopee-language': 'vi'
+    const r = await fetch(
+      `https://shopee.vn/api/v4/shop/rcmd_items?bundle=shop_page_category_tab_main&limit=30&offset=0&shop_id=${shopId}`,
+      {
+        credentials: 'include',
+        headers: {
+          'x-api-source': 'pc',
+          'x-requested-with': 'XMLHttpRequest',
+          'x-shopee-language': 'vi',
+          'referer': referer
+        }
       }
-    });
-    const data = await r.json();
-    const list = data.data?.items || [];
-    for (const it of list) {
-      const item = it.item_basic || it;
-      if (item && item.itemid && !seen.has(String(item.itemid))) {
-        seen.add(String(item.itemid));
-        let price = item.price || item.price_min || 0;
-        if (price > 1000000) price = Math.round(price / 100000);
-        const imageId = item.image || item.images?.[0];
-        items.push({
-          itemId: String(item.itemid),
-          shopId: String(item.shopid || shopId),
-          name: item.name || 'Sản phẩm mới',
-          url: `https://shopee.vn/product/${item.shopid || shopId}/${item.itemid}`,
-          price,
-          imageUrl: imageId ? (imageId.startsWith('http') ? imageId : `https://down-vn.img.susercontent.com/file/${imageId}`) : undefined,
-          ctime: item.ctime || Math.floor(Date.now() / 1000)
-        });
+    );
+    if (r.ok) {
+      const data = await r.json();
+      const list = data.data?.items || data.items || [];
+      for (const it of list) {
+        const item = it.item_basic || it;
+        if (item && item.itemid && !seen.has(String(item.itemid))) {
+          seen.add(String(item.itemid));
+          let price = item.price || item.price_min || 0;
+          if (price > 10000000) price = Math.round(price / 100000);
+          const imageId = item.image || item.images?.[0];
+          items.push({
+            itemId: String(item.itemid),
+            shopId: String(item.shopid || shopId),
+            name: item.name || 'Sản phẩm mới',
+            url: `https://shopee.vn/product/${item.shopid || shopId}/${item.itemid}`,
+            price,
+            imageUrl: imageId ? (imageId.startsWith('http') ? imageId : `https://down-vn.img.susercontent.com/file/${imageId}`) : undefined,
+            ctime: item.ctime || Math.floor(Date.now() / 1000)
+          });
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 3. search_items (Sorted by newest)
+  try {
+    const r = await fetch(
+      `https://shopee.vn/api/v4/search/search_items?by=pop&limit=30&match_id=${shopId}&newest=0&order=desc&page_type=shop&scenario=PAGE_OTHERS&version=2`,
+      {
+        credentials: 'include',
+        headers: {
+          'x-api-source': 'pc',
+          'x-requested-with': 'XMLHttpRequest',
+          'x-shopee-language': 'vi',
+          'referer': referer
+        }
+      }
+    );
+    if (r.ok) {
+      const data = await r.json();
+      const list = data.items || [];
+      for (const it of list) {
+        const item = it.item_basic || it;
+        if (item && item.itemid && !seen.has(String(item.itemid))) {
+          seen.add(String(item.itemid));
+          let price = item.price || item.price_min || 0;
+          if (price > 10000000) price = Math.round(price / 100000);
+          const imageId = item.image || item.images?.[0];
+          items.push({
+            itemId: String(item.itemid),
+            shopId: String(item.shopid || shopId),
+            name: item.name || 'Sản phẩm mới',
+            url: `https://shopee.vn/product/${item.shopid || shopId}/${item.itemid}`,
+            price,
+            imageUrl: imageId ? (imageId.startsWith('http') ? imageId : `https://down-vn.img.susercontent.com/file/${imageId}`) : undefined,
+            ctime: item.ctime || Math.floor(Date.now() / 1000)
+          });
+        }
       }
     }
   } catch (e) {}
