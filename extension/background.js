@@ -696,8 +696,13 @@ async function syncProductsToVps(vpsUrl, shopId, products) {
   } catch (e) {}
 }
 
-// Message Listener from Popup
+// Message Listener from Popup & Content Scripts
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'seller_centre_detected') {
+    handleSellerCentreSync(request.totalCount, request.products || []);
+    sendResponse({ success: true });
+    return true;
+  }
   if (request.action === 'trigger_scan_now') {
     runScanCycle().then(() => sendResponse({ success: true }));
     return true;
@@ -728,6 +733,102 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 });
+
+// Real-time Handler for Seller Centre (banhang.shopee.vn)
+async function handleSellerCentreSync(liveTotal, products) {
+  try {
+    const data = await chrome.storage.local.get(null);
+    const shop = (data.shops || []).find((s) => s.id === 1) || data.shops?.[0];
+    if (!shop) return;
+
+    const lastCount = shop.last_item_count || 0;
+    const seenSet = new Set(data.seenItems || []);
+    const knownProducts = data.knownProducts || {};
+
+    const newProductsFound = [];
+
+    // 1. Check for product updates (price or name edit)
+    for (const p of products) {
+      const old = knownProducts[p.itemId];
+      if (old) {
+        if (p.price && old.price && p.price !== old.price) {
+          addLog(
+            'alert',
+            `🚨 [Kênh Người Bán] ĐỔI GIÁ: ${p.name} (${old.price.toLocaleString('vi-VN')}₫ ➔ ${p.price.toLocaleString('vi-VN')}₫)`
+          );
+          await sendProductUpdateAlert(
+            data.teleToken,
+            data.teleChatId,
+            shop.shop_name,
+            p,
+            `Đổi giá: ${old.price.toLocaleString('vi-VN')} ₫ ➔ ${p.price.toLocaleString('vi-VN')} ₫`
+          );
+        } else if (p.name && old.name && p.name !== old.name) {
+          addLog('alert', `🚨 [Kênh Người Bán] ĐỔI TÊN: "${old.name}" ➔ "${p.name}"`);
+          await sendProductUpdateAlert(
+            data.teleToken,
+            data.teleChatId,
+            shop.shop_name,
+            p,
+            `Đổi tên: ${p.name}`
+          );
+        }
+      }
+      knownProducts[p.itemId] = { name: p.name, price: p.price, imageUrl: p.imageUrl, url: p.url };
+
+      // 2. Check for new items
+      if (!seenSet.has(p.itemId)) {
+        seenSet.add(p.itemId);
+        newProductsFound.push(p);
+      }
+    }
+
+    // Check count increase (e.g. 15 -> 17)
+    const countIncreased = liveTotal > lastCount;
+
+    if (countIncreased || newProductsFound.length > 0) {
+      addLog('alert', `⚡ [Kênh Người Bán] Phát hiện số lượng thay đổi: ${lastCount} ➔ ${liveTotal} SP!`);
+
+      if (newProductsFound.length > 0) {
+        for (const np of newProductsFound) {
+          await sendTelegramAlert(data.teleToken, data.teleChatId, shop.shop_name, np);
+          showDesktopNotification(shop.shop_name, np);
+        }
+      } else {
+        await sendShopCountAlert(
+          data.teleToken,
+          data.teleChatId,
+          shop.shop_name,
+          shop.shop_url,
+          lastCount,
+          liveTotal
+        );
+        showDesktopNotification(shop.shop_name, {
+          name: `Shop vừa đăng sản phẩm mới! (${lastCount} ➔ ${liveTotal} SP)`,
+          price: 0
+        });
+      }
+
+      const added = Math.max(newProductsFound.length, liveTotal - lastCount);
+      const todayCount = (data.newProductsToday || 0) + added;
+
+      const updatedShops = (data.shops || []).map((s) =>
+        s.id === shop.id ? { ...s, last_item_count: liveTotal } : s
+      );
+
+      await chrome.storage.local.set({
+        shops: updatedShops,
+        seenItems: Array.from(seenSet),
+        knownProducts,
+        newProductsToday: todayCount
+      });
+    } else {
+      await chrome.storage.local.set({ knownProducts });
+    }
+  } catch (err) {
+    console.warn('Seller Centre sync error:', err);
+  }
+}
 
 // Start fast runner loop
 startFastLoop();

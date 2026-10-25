@@ -24,6 +24,16 @@
     "declarativeNetRequest",
     "offscreen"
   ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://banhang.shopee.vn/*",
+        "https://shopee.vn/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "host_permissions": [
     "https://*.shopee.vn/*",
     "https://api.telegram.org/*",
