@@ -1,5 +1,6 @@
 /**
  * Shopee Realtime Monitor - Popup Script
+ * Real-time monitoring and 200-shop management UI.
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -14,6 +15,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const lastCheckTime = document.getElementById('lastCheckTime');
   const logsList = document.getElementById('logsList');
   const shopsListContainer = document.getElementById('shopsListContainer');
+  const buyerTabStatus = document.getElementById('buyerTabStatus');
 
   const btnScanNow = document.getElementById('btnScanNow');
   const btnSyncVps = document.getElementById('btnSyncVps');
@@ -22,6 +24,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   const inputNewShopUrl = document.getElementById('inputNewShopUrl');
   const inputNewShopName = document.getElementById('inputNewShopName');
 
+  const btnToggleBulkImport = document.getElementById('btnToggleBulkImport');
+  const bulkImportBox = document.getElementById('bulkImportBox');
+  const bulkImportTextarea = document.getElementById('bulkImportTextarea');
+  const btnConfirmBulkImport = document.getElementById('btnConfirmBulkImport');
+  const btnImportSampleShops = document.getElementById('btnImportSampleShops');
+  const inputSearchShops = document.getElementById('inputSearchShops');
+
   const settingTeleToken = document.getElementById('settingTeleToken');
   const settingTeleChatId = document.getElementById('settingTeleChatId');
   const settingVpsUrl = document.getElementById('settingVpsUrl');
@@ -29,9 +38,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnSaveSettings = document.getElementById('btnSaveSettings');
   const btnTestTele = document.getElementById('btnTestTele');
 
+  let currentShops = [];
+  let filterKeyword = '';
+
   // Load Initial State
   const state = await chrome.storage.local.get(null);
+  currentShops = state.shops || [];
   applyState(state);
+  checkBuyerTabStatus();
 
   // Trigger immediate scan when popup opens
   chrome.runtime.sendMessage({ action: 'trigger_scan_now' }).catch(() => {});
@@ -45,6 +59,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       document.getElementById(btn.dataset.tab).classList.add('active');
     });
   });
+
+  // Check Buyer Tab Connection Status
+  async function checkBuyerTabStatus() {
+    if (!buyerTabStatus) return;
+    try {
+      const tabs = await chrome.tabs.query({ url: '*://*.shopee.vn/*' });
+      const buyerTab = tabs?.find((t) => !t.url.includes('banhang.') && !t.url.includes('seller.'));
+      if (buyerTab) {
+        buyerTabStatus.innerHTML = '<span style="color: #10b981;">✅ Đã kết nối tab Người Mua (shopee.vn)</span>';
+      } else {
+        buyerTabStatus.innerHTML = '<span style="color: #f59e0b;">⚠️ Cần mở 1 tab shopee.vn trên Profile A</span>';
+      }
+    } catch (e) {
+      buyerTabStatus.innerHTML = '<span style="color: #71717a;">Chưa phát hiện tab Shopee</span>';
+    }
+  }
 
   // Master Toggle
   masterToggle.addEventListener('change', async (e) => {
@@ -63,6 +93,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnScanNow.disabled = false;
         btnScanNow.innerHTML = '<span class="icon">🚀</span> Quét ngay';
         refreshDisplay();
+        checkBuyerTabStatus();
       }, 1500);
     });
   });
@@ -73,7 +104,109 @@ document.addEventListener('DOMContentLoaded', async () => {
     logsList.innerHTML = '<div class="log-entry log-info"><span class="log-time">[Đã xóa]</span> Nhật ký đã được làm trống.</div>';
   });
 
-  // Add Shop
+  // Toggle Bulk Import Box
+  if (btnToggleBulkImport) {
+    btnToggleBulkImport.addEventListener('click', () => {
+      const isHidden = bulkImportBox.style.display === 'none';
+      bulkImportBox.style.display = isHidden ? 'block' : 'none';
+      btnToggleBulkImport.textContent = isHidden ? '❌ Đóng' : '📥 Nhập 200 Shop';
+    });
+  }
+
+  // Confirm Bulk Import (Up to 200 shops)
+  if (btnConfirmBulkImport) {
+    btnConfirmBulkImport.addEventListener('click', async () => {
+      const rawText = bulkImportTextarea.value.trim();
+      if (!rawText) {
+        alert('Vui lòng dán danh sách link shop (mỗi link 1 dòng)!');
+        return;
+      }
+
+      const lines = rawText.split('\n').map((l) => l.trim()).filter(Boolean);
+      const { shops = [] } = await chrome.storage.local.get('shops');
+      const existingUrls = new Set(shops.map((s) => s.shop_url.toLowerCase()));
+      const addedShops = [];
+      let nextId = shops.length > 0 ? Math.max(...shops.map((s) => s.id || 0)) + 1 : 1;
+
+      for (const line of lines) {
+        let name = '';
+        let url = line;
+
+        // Support format: "Shop Name, https://shopee.vn/..."
+        if (line.includes(',')) {
+          const parts = line.split(',');
+          name = parts[0].trim();
+          url = parts.slice(1).join(',').trim();
+        }
+
+        if (!url.startsWith('http')) {
+          url = `https://shopee.vn/${url.replace(/^\/+/, '')}`;
+        }
+
+        if (existingUrls.has(url.toLowerCase())) continue;
+        existingUrls.add(url.toLowerCase());
+
+        const cleanName = name || url.split('/').filter(Boolean).pop() || `Shop ${nextId}`;
+
+        addedShops.push({
+          id: nextId++,
+          shop_id: '',
+          shop_name: cleanName,
+          shop_url: url,
+          is_active: true,
+          last_item_count: null
+        });
+      }
+
+      if (addedShops.length === 0) {
+        alert('Tất cả các shop đã có trong danh sách!');
+        return;
+      }
+
+      const updated = [...shops, ...addedShops];
+      await chrome.storage.local.set({ shops: updated });
+      currentShops = updated;
+      renderShops(updated);
+      bulkImportTextarea.value = '';
+      bulkImportBox.style.display = 'none';
+      btnToggleBulkImport.textContent = '📥 Nhập 200 Shop';
+      alert(`Đã thêm thành công ${addedShops.length} shop! Tổng hiện tại: ${updated.length} shop.`);
+    });
+  }
+
+  // Pre-load Sample Top 10 Official Shops
+  if (btnImportSampleShops) {
+    btnImportSampleShops.addEventListener('click', () => {
+      bulkImportTextarea.value = [
+        'Coolmate Official Store, https://shopee.vn/coolmate.vn',
+        'Anker Official VN, https://shopee.vn/anker_official_store',
+        'Lock&Lock Vietnam, https://shopee.vn/locknlockvn',
+        'Unilever Vietnam, https://shopee.vn/unilever_vietnam',
+        'Xiaomi Flagship Store, https://shopee.vn/xiaomiofficialstore',
+        'Baseus Official Store, https://shopee.vn/baseus_flagship_store',
+        'Torano Official, https://shopee.vn/torano.vn',
+        'Yame Official, https://shopee.vn/yame_vn',
+        'GUMAC Official, https://shopee.vn/gumac_fashion',
+        "Biti's Official Store, https://shopee.vn/bitisvn"
+      ].join('\n');
+    });
+  }
+
+  // Search Filter in Shops List
+  if (inputSearchShops) {
+    inputSearchShops.addEventListener('input', (e) => {
+      filterKeyword = e.target.value.trim().toLowerCase();
+      const filtered = currentShops.filter(
+        (s) =>
+          (s.shop_name && s.shop_name.toLowerCase().includes(filterKeyword)) ||
+          (s.shop_url && s.shop_url.toLowerCase().includes(filterKeyword)) ||
+          (s.shop_id && s.shop_id.includes(filterKeyword))
+      );
+      renderShops(filtered, true);
+    });
+  }
+
+  // Add Single Shop
   btnAddShop.addEventListener('click', async () => {
     const url = inputNewShopUrl.value.trim();
     const name = inputNewShopName.value.trim();
@@ -84,19 +217,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const { shops = [] } = await chrome.storage.local.get('shops');
     const newId = shops.length > 0 ? Math.max(...shops.map((s) => s.id || 0)) + 1 : 1;
-    const cleanName = name || url.split('/').pop() || `Shop ${newId}`;
+    const cleanName = name || url.split('/').filter(Boolean).pop() || `Shop ${newId}`;
 
     const newShop = {
       id: newId,
       shop_id: '',
       shop_name: cleanName,
-      shop_url: url.startsWith('http') ? url : `https://shopee.vn/${url}`,
+      shop_url: url.startsWith('http') ? url : `https://shopee.vn/${url.replace(/^\/+/, '')}`,
       is_active: true,
       last_item_count: null
     };
 
     const updated = [newShop, ...shops];
     await chrome.storage.local.set({ shops: updated });
+    currentShops = updated;
     inputNewShopUrl.value = '';
     inputNewShopName.value = '';
     renderShops(updated);
@@ -111,6 +245,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnSyncVps.disabled = false;
         btnSyncVps.innerHTML = '<span class="icon">🔄</span> Làm mới dữ liệu';
         refreshDisplay();
+        checkBuyerTabStatus();
       }, 1000);
     });
   });
@@ -143,7 +278,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnTestTele.disabled = true;
     btnTestTele.textContent = '⏳ Đang gửi...';
 
-    chrome.runtime.sendMessage({ action: 'test_telegram', token, chatId }, (resp) => {
+    chrome.runtime.sendMessage({ action: 'test_telegram', token, chatId }, () => {
       setTimeout(() => {
         btnTestTele.disabled = false;
         btnTestTele.textContent = '✉️ Gửi tin nhắn kiểm tra thử';
@@ -154,7 +289,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Listen for storage changes
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.logs) renderLogs(changes.logs.newValue || []);
-    if (changes.shops) renderShops(changes.shops.newValue || []);
+    if (changes.shops) {
+      currentShops = changes.shops.newValue || [];
+      renderShops(currentShops);
+    }
     if (changes.newProductsToday) newProductsToday.textContent = changes.newProductsToday.newValue || 0;
     if (changes.lastCheckTime) lastCheckTime.textContent = changes.lastCheckTime.newValue || 'Vừa xong';
   });
@@ -165,6 +303,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateStatusDisplay(data.isActive !== false);
 
     const shops = data.shops || [];
+    currentShops = shops;
     totalShopsCount.textContent = shops.length;
     tabShopsCount.textContent = shops.length;
     newProductsToday.textContent = data.newProductsToday || 0;
@@ -205,12 +344,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       .join('');
   }
 
-  function renderShops(shops) {
-    totalShopsCount.textContent = shops.length;
-    tabShopsCount.textContent = shops.length;
+  function renderShops(shops, isFiltered = false) {
+    if (!isFiltered) {
+      totalShopsCount.textContent = shops.length;
+      tabShopsCount.textContent = shops.length;
+    }
 
     if (!shops || shops.length === 0) {
-      shopsListContainer.innerHTML = '<div class="empty-state">Chưa có shop nào. Hãy thêm shop hoặc nhấn "Đồng bộ từ VPS"!</div>';
+      shopsListContainer.innerHTML = '<div class="empty-state">Không tìm thấy shop nào. Hãy nhấn "+ Thêm" hoặc "📥 Nhập 200 Shop"!</div>';
       return;
     }
 
@@ -220,7 +361,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         <div class="shop-item" data-id="${s.id}">
           <div class="shop-item-info">
             <span class="shop-item-title">${escapeHtml(s.shop_name)}</span>
-            <span class="shop-item-meta">ID: ${s.shop_id || 'Chưa định danh'} &bull; ${s.last_item_count !== null ? s.last_item_count + ' SP' : 'Đang quét'}</span>
+            <span class="shop-item-meta">ID: ${s.shop_id || 'Chưa định danh'} &bull; ${s.last_item_count !== null && s.last_item_count !== undefined ? s.last_item_count + ' SP' : 'Đang quét'}</span>
           </div>
           <div class="shop-item-actions">
             <button class="btn-del" title="Xóa shop" data-del-id="${s.id}">🗑️</button>
@@ -237,6 +378,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const { shops = [] } = await chrome.storage.local.get('shops');
         const updated = shops.filter((s) => s.id !== id);
         await chrome.storage.local.set({ shops: updated });
+        currentShops = updated;
         renderShops(updated);
       });
     });

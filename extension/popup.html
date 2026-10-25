@@ -66,6 +66,11 @@
         <button class="btn btn-ghost" id="btnClearLogs" title="Xóa nhật ký">🗑️</button>
       </div>
 
+      <div style="font-size: 11px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; background: rgba(255,255,255,0.05); padding: 6px 10px; border-radius: 6px;">
+        <span>🌐 Phiên Shopee: <b id="buyerTabStatus" style="color: #10b981;">Đang kiểm tra tab Người Mua...</b></span>
+        <span style="color: #71717a;">Profile A (10s/chu kỳ)</span>
+      </div>
+
       <div class="logs-card">
         <div class="logs-header">
           <span>Nhật ký thời gian thực</span>
@@ -81,10 +86,24 @@
 
     <!-- TAB 2: Quản lý Shop -->
     <div class="tab-content" id="tab-shops">
-      <div class="add-shop-form">
-        <input type="text" id="inputNewShopUrl" placeholder="Nhập Link Shop hoặc Username Shopee..." class="input-text">
-        <input type="text" id="inputNewShopName" placeholder="Tên gợi nhớ (tùy chọn)" class="input-text">
-        <button class="btn btn-primary" id="btnAddShop">+ Thêm Shop</button>
+      <div class="add-shop-form" style="display: flex; gap: 6px; flex-wrap: wrap;">
+        <input type="text" id="inputNewShopUrl" placeholder="Link Shop hoặc Username Shopee..." class="input-text" style="flex: 1; min-width: 140px;">
+        <input type="text" id="inputNewShopName" placeholder="Tên shop (tùy chọn)" class="input-text" style="flex: 1; min-width: 120px;">
+        <button class="btn btn-primary" id="btnAddShop">+ Thêm</button>
+        <button class="btn btn-secondary" id="btnToggleBulkImport">📥 Nhập 200 Shop</button>
+      </div>
+
+      <div id="bulkImportBox" style="display: none; margin-bottom: 10px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); padding: 10px; border-radius: 8px;">
+        <p style="font-size: 11px; color: #a1a1aa; margin-bottom: 6px;">Dán danh sách tối đa 200 shop (mỗi dòng 1 link Shopee hoặc format: <code>Tên Shop, https://shopee.vn/...</code>):</p>
+        <textarea id="bulkImportTextarea" rows="4" class="input-text" style="width: 100%; font-size: 11px; resize: vertical;" placeholder="https://shopee.vn/coolmate.vn&#10;https://shopee.vn/anker_official_store&#10;..."></textarea>
+        <div style="display: flex; gap: 8px; margin-top: 8px;">
+          <button class="btn btn-primary btn-sm" id="btnConfirmBulkImport">✅ Lưu danh sách Shop</button>
+          <button class="btn btn-secondary btn-sm" id="btnImportSampleShops">⚡ Nạp 10 Shop Mẫu</button>
+        </div>
+      </div>
+
+      <div style="margin-bottom: 8px;">
+        <input type="text" id="inputSearchShops" placeholder="🔍 Tìm kiếm shop..." class="input-text" style="width: 100%; font-size: 11px; padding: 6px 10px;">
       </div>
 
       <div class="shops-list-wrapper">

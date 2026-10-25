@@ -161,3 +161,49 @@ if (document.body) {
   const observer = new MutationObserver(() => scanCurrentPage());
   observer.observe(document.body, { childList: true, subtree: true });
 }
+
+// 3. Same-Origin API Proxy for Background Scanner
+// Executes requests directly inside the buyer tab to bypass anti-bot WAF (90309999)
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === 'fetch_shopee_api') {
+    fetch(msg.url, {
+      method: msg.method || 'GET',
+      credentials: 'include',
+      headers: {
+        'x-api-source': 'pc',
+        'x-requested-with': 'XMLHttpRequest',
+        'x-shopee-language': 'vi',
+        'referer': msg.referer || window.location.href,
+        ...(msg.headers || {})
+      },
+      body: msg.body ? JSON.stringify(msg.body) : undefined
+    })
+      .then(async (r) => {
+        try {
+          const data = await r.json();
+          sendResponse({ success: true, status: r.status, data });
+        } catch (e) {
+          sendResponse({ success: false, status: r.status, error: 'JSON parse error' });
+        }
+      })
+      .catch((err) => {
+        sendResponse({ success: false, error: err.message });
+      });
+    return true; // Keep message channel open for async response
+  }
+
+  if (msg.action === 'ping_buyer_tab') {
+    sendResponse({ success: true, url: window.location.href, isBuyerTab: !window.location.hostname.includes('banhang.') });
+    return true;
+  }
+});
+
+// Announce tab readiness to background service worker
+try {
+  chrome.runtime.sendMessage({
+    action: 'shopee_buyer_tab_ready',
+    url: window.location.href,
+    isBuyerTab: !window.location.hostname.includes('banhang.')
+  }).catch(() => {});
+} catch (e) {}
+
