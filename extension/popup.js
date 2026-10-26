@@ -64,7 +64,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function checkBuyerTabStatus() {
     if (!buyerTabStatus) return;
     try {
-      const tabs = await chrome.tabs.query({ url: '*://*.shopee.vn/*' });
+      let tabs = await chrome.tabs.query({ url: ['*://shopee.vn/*', '*://*.shopee.vn/*'] });
+      if (!tabs || tabs.length === 0) {
+        const allTabs = await chrome.tabs.query({});
+        tabs = allTabs.filter((t) => t.url && t.url.includes('shopee.vn'));
+      }
       const buyerTab = tabs?.find((t) => !t.url.includes('banhang.') && !t.url.includes('seller.'));
       if (buyerTab) {
         buyerTabStatus.innerHTML = '<span style="color: #10b981;">✅ Đã kết nối tab Người Mua (shopee.vn)</span>';

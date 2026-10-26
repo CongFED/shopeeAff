@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Shopee Realtime Product Monitor & Tele Bot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Tự động phát hiện sản phẩm mới từ 200+ shop Shopee và gửi cảnh báo về Telegram tức thì (100% Miễn phí).",
   "icons": {
     "16": "icons/icon16.png",
@@ -29,6 +29,7 @@
   "content_scripts": [
     {
       "matches": [
+        "https://shopee.vn/*",
         "https://*.shopee.vn/*"
       ],
       "js": ["content.js"],
@@ -36,6 +37,7 @@
     }
   ],
   "host_permissions": [
+    "https://shopee.vn/*",
     "https://*.shopee.vn/*",
     "https://api.telegram.org/*",
     "http://36.50.26.72:3000/*",

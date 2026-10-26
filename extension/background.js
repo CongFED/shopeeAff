@@ -106,7 +106,11 @@ chrome.runtime.onConnect.addListener((port) => {
 // Injects directly into open Shopee tab so cookies & tokens are 100% valid (0% WAF blocks)
 async function fetchViaBuyerTab(url, referer) {
   try {
-    let tabs = await chrome.tabs.query({ url: '*://*.shopee.vn/*' });
+    let tabs = await chrome.tabs.query({ url: ['*://shopee.vn/*', '*://*.shopee.vn/*'] });
+    if (!tabs || tabs.length === 0) {
+      const allTabs = await chrome.tabs.query({});
+      tabs = allTabs.filter((t) => t.url && t.url.includes('shopee.vn'));
+    }
     let buyerTab = tabs?.find((t) => !t.url.includes('banhang.') && !t.url.includes('seller.'));
 
     // If no buyer tab is open, automatically open a pinned background tab to guarantee session
@@ -335,7 +339,14 @@ async function scanSingleShop(shop, state) {
     // 2. Direct Item-ID Detection: Find any item whose ID is not yet in seenSet
     const newProductsFound = products.filter((p) => !seenSet.has(p.itemId));
 
-    const currentCount = liveItemCount > 0 ? liveItemCount : (lastItemCount || products.length);
+    if (products.length > 0 && !isFirstRun) {
+      addLog('info', `[${shop.shop_name}] Quét thấy ${products.length} SP (${liveItemCount} SP danh mục). Đang đối chiếu...`);
+    }
+
+    const currentCount = newProductsFound.length > 0
+      ? (liveItemCount > 0 ? liveItemCount : products.length)
+      : (lastItemCount || liveItemCount || products.length);
+
     const updatedShops = (state.shops || []).map((s) =>
       s.id === shop.id
         ? {
@@ -383,6 +394,9 @@ async function scanSingleShop(shop, state) {
       // Sync to VPS Server
       syncProductsToVps(state.vpsUrl, numericShopId, products).catch(() => {});
     } else {
+      if (liveItemCount > (lastItemCount || 0)) {
+        addLog('info', `[${shop.shop_name}] Biến động số lượng: ${lastItemCount || 0} ➔ ${liveItemCount} SP. Đang đợi Shopee đồng bộ tìm kiếm...`);
+      }
       await chrome.storage.local.set({
         shops: updatedShops,
         knownProducts
